@@ -1,0 +1,12 @@
+class_name: VAEX
+architecture:
+  x_dim: 129
+  n_resolutions: 5
+  h_dims: [16, 32, 64, 128, 256, 512]
+  k_dims: [3, 3, 3, 3, 3]
+  strides: [2, 2, 2, 2, 2]
+  paddings: [1, 1, 1, 1, 1]
+  z_dims: [1, 2, 4, 8, 16, 32]
+  depths: [1, 1, 1, 1, 1]
+  interpolate: true
+ema_decay: 0.999

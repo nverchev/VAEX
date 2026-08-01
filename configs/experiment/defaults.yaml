@@ -1,0 +1,11 @@
+defaults:
+  - all_config
+  - classification: classification
+  - autoencoder: autoencoder
+  - user: user_settings
+  - data: default_data
+  - _self_
+
+
+variation:
+final: false

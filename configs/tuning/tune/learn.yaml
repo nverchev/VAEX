@@ -1,0 +1,19 @@
+study_name:
+  learn
+
+n_trials: 100
+
+params:
+  subexperiment.train.learn.learning_rate:
+    suggest: suggest_float
+    settings:
+      low: 1e-4
+      high: 1e-2
+      log: true
+
+  subexperiment.train.learn.opt_settings.weight_decay:
+    suggest: suggest_float
+    settings:
+      low: 1e-6
+      high: 1e-2
+      log: true

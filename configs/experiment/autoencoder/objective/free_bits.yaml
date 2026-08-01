@@ -1,0 +1,4 @@
+c_KLD: 100.0
+scale_prior: 1.0
+freebits: 1.0
+posterior_weight: 1.0

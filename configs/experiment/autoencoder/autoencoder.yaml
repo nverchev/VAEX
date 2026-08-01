@@ -1,0 +1,7 @@
+defaults:
+  - train: default_train
+  - model: vaex
+  - objective: free_bits
+  - _self_
+
+name: vae

@@ -1,0 +1,9 @@
+name: CelebaMale
+target_attr: Male
+classes:
+  - Female
+  - Male
+
+n_train_samples: 162770
+n_val_samples: 19867
+n_test_samples: 19962

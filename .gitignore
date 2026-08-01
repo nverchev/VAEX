@@ -1,0 +1,14 @@
+**/__pycache__
+*pyc
+experiments*/
+optimization_db/
+outputs/
+scratch/
+reference/
+tests/
+.agent/
+.env
+.idea/
+.vscode/
+wandb
+uv.lock

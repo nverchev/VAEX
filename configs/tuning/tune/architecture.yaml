@@ -1,0 +1,11 @@
+study_name:
+  architecture
+
+n_trials: 100
+
+params:
+  subexperiment.model.architecture.dropout_rate:
+    suggest: suggest_float
+    settings:
+      low: 0.0
+      high: 0.5

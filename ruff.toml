@@ -1,0 +1,77 @@
+exclude = [
+    ".bzr",
+    ".direnv",
+    ".eggs",
+    ".git",
+    ".git-rewrite",
+    ".hg",
+    ".ipynb_checkpoints",
+    ".mypy_cache",
+    ".nox",
+    ".pants.d",
+    ".pyenv",
+    ".pytest_cache",
+    ".pytype",
+    ".ruff_cache",
+    ".svn",
+    ".tox",
+    ".venv",
+    ".vscode",
+    "__pypackages__",
+    "_build",
+    "buck-out",
+    "build",
+    "dist",
+    "node_modules",
+    "site-packages",
+    "venv",
+]
+
+line-length = 120
+target-version = "py313"
+indent-width = 4
+
+# Linting settings
+[lint]
+select = [
+    "F",    # Pyflakes (Detects logic errors, undefined names)
+    "E",    # pycodestyle errors (Basic PEP8)
+    "W",    # pycodestyle warnings
+    "B",    # flake8-bugbear (Likely bugs/design flaws)
+    "UP",   # pyupgrade (Keeps syntax modern)
+    "C4",   # flake8-comprehensions (Better performance/readability)
+    "RUF",  # Ruff-specific rules (General improvements)
+]
+ignore = [
+    "UP046", # non-pep695-generic-class (keep Generic[T] and TypeVar)
+    "UP047", # non-pep695-generic-function (keep TypeVar in functions)
+]
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+))$"
+fixable = ["ALL"]
+unfixable = []
+
+# Pydocstyle settings
+[lint.pydocstyle]
+convention = "google"
+
+# Isort settings for import sorting
+[lint.isort]
+known-first-party = ["drytorch"]
+combine-as-imports = false
+lines-after-imports = 2
+lines-between-types = 1
+section-order = [
+    "future",
+    "standard-library",
+    "third-party",
+    "first-party",
+]
+
+# Auto-formatting settings
+[format]
+quote-style = "single"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+docstring-code-format = true
+docstring-code-line-length = "dynamic"
