@@ -111,15 +111,12 @@ class ObjectiveConfig:
 
     Attributes:
         nll_sigma: Standard deviation (sigma) of the Gaussian NLL reconstruction loss.
-            The corresponding variance is ``nll_sigma ** 2``.
         scale_prior: Prior scaling factor for latent conditioning.
-        freebits: Free-bits threshold for KL divergence.
         posterior_weight: Weight applied to the posterior mean during generation.
     """
 
     nll_sigma: float = 0.1
     scale_prior: float = 5.0
-    freebits: float = 1.0
     posterior_weight: float = 1.0
 
 
@@ -257,6 +254,8 @@ class TrainingConfig:
         learn: Optimiser and scheduler configuration.
         n_epochs: Maximum number of training epochs.
         early_stopping: Early stopping configuration.
+        annealing_period: Epochs over which the free-bits threshold anneals to 0.
+        freebits: Free-bits threshold for KL divergence allowed at the start of training.
     """
 
     batch_size: StrictlyPositiveInt
@@ -265,6 +264,7 @@ class TrainingConfig:
     early_stopping: EarlyStoppingConfig
     _n_subprocesses: PositiveInt
     annealing_period: int = 45
+    freebits: float = 1.0
 
     @model_validator(mode='after')
     def _check_batch_divisibility(self) -> Self:

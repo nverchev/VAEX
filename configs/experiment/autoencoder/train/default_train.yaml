@@ -7,3 +7,4 @@ n_epochs: 50
 batch_size: 32
 _n_subprocesses: ${user.n_subprocesses}
 annealing_period: 45
+freebits: 1.0
