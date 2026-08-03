@@ -4,16 +4,22 @@ study_name:
 n_trials: 100
 
 params:
-  subexperiment.train.learn.learning_rate:
+  autoencoder.train.learn.learning_rate:
     suggest: suggest_float
     settings:
       low: 1e-4
-      high: 1e-2
+      high: 1e-3
       log: true
 
-  subexperiment.train.learn.opt_settings.weight_decay:
+  autoencoder.train.learn.opt_settings.weight_decay:
     suggest: suggest_float
     settings:
       low: 1e-6
-      high: 1e-2
+      high: 1e-4
       log: true
+
+  autoencoder.train.learn.scheduler.warmup_steps:
+    suggest: suggest_int
+    settings:
+      low: 0
+      high: 5

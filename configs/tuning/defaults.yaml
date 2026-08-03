@@ -5,5 +5,5 @@ defaults:
 
 db_name: optimization
 overrides: []
-n_epochs: 100
+n_epochs: 10
 subexperiment: classification

@@ -4,7 +4,7 @@ study_name:
 n_trials: 100
 
 params:
-  subexperiment.model.architecture.dropout_rate:
+  autoencoder.model.architecture.dropout_rate:
     suggest: suggest_float
     settings:
       low: 0.0

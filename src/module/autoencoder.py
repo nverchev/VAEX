@@ -20,6 +20,7 @@ from src.module.layers import (
     ToLatentConvADAIN,
     View,
     reverse_zip,
+    soft_clamp,
 )
 
 class Abstract_VAE(nn.Module, abc.ABC):
@@ -34,7 +35,6 @@ class Abstract_VAE(nn.Module, abc.ABC):
     paddings: list[int]
     z_dims: list[int]
     depths: list[int]
-    interpolate: bool
     l_dims_encoder: list[int]
     l_dims_decoder: list[int]
     flat_dim: int
@@ -52,7 +52,6 @@ class Abstract_VAE(nn.Module, abc.ABC):
         self.paddings = list(vae_arch.paddings)
         self.z_dims = list(vae_arch.z_dims)
         self.depths = list(vae_arch.depths)
-        self.interpolate = vae_arch.interpolate
         self.l_dims_encoder, self.l_dims_decoder, self.flat_dim = self.size_calc()
         return
 
@@ -112,7 +111,7 @@ class Abstract_VAE(nn.Module, abc.ABC):
         return self.decode(out, condition=condition, sample=sample).recon
 
     def sampling(self, mu: torch.Tensor, log_var: torch.Tensor) -> torch.Tensor:
-        clamped_logvar = torch.clamp(log_var, min=-10.0, max=10.0)
+        clamped_logvar = soft_clamp(log_var, min_val=-10.0, max_val=10.0)
         std = torch.exp(0.5 * clamped_logvar)
         eps = torch.randn_like(std)
         z = eps.mul(std).add_(mu) if self.training else eps.mul(std / 3.0).add_(mu)
@@ -195,7 +194,6 @@ class CVAE(Abstract_VAE):
                 padding,
                 deconv=False,
                 depth=depth,
-                interpolate=self.interpolate,
             )
             self.encoding.append(encode)
 
@@ -232,7 +230,6 @@ class CVAE(Abstract_VAE):
                 padding,
                 deconv=True,
                 depth=depth,
-                interpolate=self.interpolate,
             )
             self.decode_list.append(decode)
             if z_dim:
@@ -314,8 +311,8 @@ class CVAE(Abstract_VAE):
             self.decode_list, self.from_latent_list, self.generate_list, self.inference_list, self.merge, strict=False
         ):
             x = decode(x)
-            h = out.hidden.pop() if sample is None else None
-            if out.hidden is not None and h is not None:
+            h = out.hidden.pop() if sample is None and out.hidden else None
+            if h is not None:
                 out.hidden.insert(0, h)
 
             if not isinstance(from_latent, NullOp):

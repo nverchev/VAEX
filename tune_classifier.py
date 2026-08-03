@@ -31,8 +31,8 @@ def set_objective(tune_cfg: DictConfig, subexp_name: str) -> Callable[[optuna.Tr
         """Set up the experiment and launch the training cycle."""
         overrides = suggest_overrides(tune_cfg, trial)
         actual_overrides = [o.replace('subexperiment.', f'{subexp_name}.') for o in overrides]
+        actual_overrides.append(f'{subexp_name}.train.n_epochs={tune_cfg.n_epochs}')
         trial_cfg = get_config_all(actual_overrides)
-        getattr(trial_cfg, subexp_name).train.n_epochs = tune_cfg.n_epochs
         trial_cfg.user.seed = tune_cfg.seed
         exp = Experiment(trial_cfg, name=trial_cfg.name, par_dir=trial_cfg.user.path.version_dir, tags=trial_cfg.tags)
         with exp.create_run(record=False):
@@ -57,7 +57,7 @@ def set_objective(tune_cfg: DictConfig, subexp_name: str) -> Callable[[optuna.Tr
 def main(tune_cfg: DictConfig) -> None:
     """Set up the study and launch optimization."""
     set_tuning_logging()
-    subexp_name = str(tune_cfg.subexperiment)
+    subexp_name = 'classification'
     pathlib.Path(tune_cfg.db_location).mkdir(exist_ok=True)
     if tune_cfg.tune.use_pruner:
         pruner = optuna.pruners.MedianPruner(

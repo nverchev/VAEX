@@ -95,6 +95,13 @@ def reverse_zip(*args: Sequence) -> zip:
     return zip(*rev_args, strict=False)
 
 
+def soft_clamp(x: torch.Tensor, min_val: float, max_val: float) -> torch.Tensor:
+    """Smoothly bound `x` to (min_val, max_val); unlike torch.clamp, gradient never vanishes."""
+    center = (min_val + max_val) / 2
+    half_range = (max_val - min_val) / 2
+    return center + half_range * torch.tanh((x - center) / half_range)
+
+
 class BaseLayer(nn.Module, metaclass=abc.ABCMeta):
     """A class that includes a layer followed by an optional activation and grouped normalization."""
 
@@ -350,7 +357,7 @@ class ResLayer(nn.Module):
 
 
 class ResBlock(nn.Module):
-    """Residual block supporting multiple depths and spatial interpolation."""
+    """Residual block supporting multiple depths, always adding a resampled skip connection."""
 
     def __init__(
         self,
@@ -362,17 +369,14 @@ class ResBlock(nn.Module):
         padding: int,
         deconv: bool = False,
         depth: int = 0,
-        interpolate: bool = False,
     ) -> None:
         super().__init__()
         modules = []
         self.stride = stride
         self.deconv = deconv
-        self.interpolate = interpolate
         self.h_in = h_in
         self.h_out = h_out
-        if interpolate:
-            self.se = SqueezeExcite(h_out)
+        self.se = SqueezeExcite(h_out)
 
         for _ in range(depth):
             modules.append(ResLayer(Block, h_in))
@@ -383,9 +387,6 @@ class ResBlock(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         y = self.outer_block(x)
-        if not self.interpolate:
-            return y
-
         output_size = y.size()
         if self.stride != 1:
             x = F.interpolate(x, size=output_size[2:], mode='bilinear', align_corners=False)

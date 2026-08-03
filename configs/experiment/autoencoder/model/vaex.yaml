@@ -8,5 +8,4 @@ architecture:
   paddings: [1, 1, 1, 1, 1]
   z_dims: [1, 2, 4, 8, 16, 32]
   depths: [1, 1, 1, 1, 1]
-  interpolate: true
 ema_decay: 0.999

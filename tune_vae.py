@@ -20,10 +20,9 @@ def set_objective(tune_cfg: DictConfig, subexp_name: str) -> Callable[[optuna.Tr
     def objective(trial: optuna.Trial) -> float:
         overrides = suggest_overrides(tune_cfg, trial)
         actual_overrides = [o.replace('subexperiment.', f'{subexp_name}.') for o in overrides]
+        actual_overrides.append(f'{subexp_name}.train.n_epochs={tune_cfg.n_epochs}')
         trial_cfg = get_config_all(actual_overrides)
-        getattr(trial_cfg, subexp_name).train.n_epochs = tune_cfg.n_epochs
         trial_cfg.user.seed = tune_cfg.seed
-
         exp = Experiment(trial_cfg, name=trial_cfg.name, par_dir=trial_cfg.user.path.version_dir, tags=trial_cfg.tags)
         with exp.create_run(record=False):
             try:
@@ -44,7 +43,6 @@ def set_objective(tune_cfg: DictConfig, subexp_name: str) -> Callable[[optuna.Tr
 @hydra.main(version_base=None, config_path=ConfigPath.TUNING.absolute(), config_name='defaults')
 def main(tune_cfg: DictConfig) -> None:
     set_tuning_logging()
-    subexp_name = str(tune_cfg.subexperiment)
     pathlib.Path(tune_cfg.db_location).mkdir(exist_ok=True)
     if tune_cfg.tune.use_pruner:
         pruner = optuna.pruners.MedianPruner(
@@ -56,12 +54,12 @@ def main(tune_cfg: DictConfig) -> None:
     else:
         pruner = optuna.pruners.NopPruner()
     sampler = optuna.samplers.GPSampler(warn_independent_sampling=False)
-    study_name = get_study_name(tune_cfg.tune.study_name + f'_{subexp_name}', tune_cfg.overrides)
+    study_name = get_study_name(tune_cfg.tune.study_name + 'vae', tune_cfg.overrides)
     study = optuna.create_study(
         study_name=study_name, storage=tune_cfg.storage, sampler=sampler, pruner=pruner, load_if_exists=True
     )
     log_study_settings(study, tune_cfg)
-    study.optimize(set_objective(tune_cfg, subexp_name), n_trials=tune_cfg.tune.n_trials)
+    study.optimize(set_objective(tune_cfg, 'vae'), n_trials=tune_cfg.tune.n_trials)
     return None
 
 

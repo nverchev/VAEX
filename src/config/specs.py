@@ -102,7 +102,6 @@ class VAEArchitectureConfig(BaseArchitectureConfig):
     paddings: tuple[PositiveInt, ...] = (1, 1, 1, 1, 1)
     z_dims: tuple[StrictlyPositiveInt, ...] = (1, 2, 4, 8, 16, 32)
     depths: tuple[PositiveInt, ...] = (1, 1, 1, 1, 1)
-    interpolate: bool = True
     conditioning: Conditioning = Conditioning.ExplicitAndLearned
 
 
@@ -111,13 +110,14 @@ class ObjectiveConfig:
     """Specification for Autoencoder / VAE loss objective and metrics parameters.
 
     Attributes:
-        c_KLD: KL divergence loss weight coefficient.
+        nll_sigma: Standard deviation (sigma) of the Gaussian NLL reconstruction loss.
+            The corresponding variance is ``nll_sigma ** 2``.
         scale_prior: Prior scaling factor for latent conditioning.
         freebits: Free-bits threshold for KL divergence.
         posterior_weight: Weight applied to the posterior mean during generation.
     """
 
-    c_KLD: float = 100.0
+    nll_sigma: float = 0.1
     scale_prior: float = 5.0
     freebits: float = 1.0
     posterior_weight: float = 1.0

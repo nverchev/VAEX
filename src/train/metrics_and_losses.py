@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -11,6 +10,7 @@ import torch.nn.functional as F
 from drytorch.lib.objectives import DictLoss, Loss, LossBase, Metric
 from src.config.experiment import Experiment
 from src.data.structures import Outputs, Targets
+from src.module.layers import soft_clamp
 
 
 def get_accuracy() -> Metric[torch.Tensor | Outputs, Targets]:
@@ -38,33 +38,25 @@ def get_cross_entropy() -> LossBase[torch.Tensor | Outputs, Targets]:
 class NLLLoss:
     """Callable class for Gaussian negative log-likelihood reconstruction loss component."""
 
-    def __init__(self) -> None:
-        self.adj_nll: float = float(0.5 * np.log(2 * np.pi))
-        self.train_var: torch.Tensor | None = None
-        return
-
-    def reset_state(self) -> None:
-        self.train_var = None
+    def __init__(self, sigma: float = 0.1) -> None:
+        self.adj_nll: float = 0.5 * math.log(2 * math.pi)
+        self.var: float = sigma ** 2
+        self.logvar: float = math.log(self.var)
         return
 
     def __call__(self, outputs: Outputs, targets: Targets) -> dict[str, torch.Tensor]:
         ref_image = targets.ref
         SE = F.mse_loss(outputs.recon, ref_image, reduction='none')
-        if self.train_var is None:
-            self.train_var = torch.clamp(SE.mean(0).detach(), min=1e-5)
-
-        local_device = outputs.recon.device
-        train_var = torch.clamp(self.train_var.to(local_device), min=1e-5)
-        train_logvar = torch.log(train_var)
-
-        NLL = 0.5 * (SE / train_var + train_logvar).mean(0).sum() + self.adj_nll * train_var.numel()
+        NLL = 0.5 * (SE / self.var + self.logvar).mean(0).sum() + self.adj_nll * SE[0].numel()
         MSE = SE.mean()
         return {'NLL': NLL, 'MSE': MSE}
 
 
 def get_nll_loss() -> LossBase[Outputs, Targets]:
     """Get Gaussian negative log-likelihood reconstruction loss component with MSE metric."""
-    return DictLoss(NLLLoss(), name='NLL')
+    cfg = Experiment.get_config()
+    objective_cfg = cfg.autoencoder.objective
+    return DictLoss(NLLLoss(sigma=objective_cfg.nll_sigma), name='NLL')
 
 
 def _compute_prior_mu(
@@ -101,7 +93,7 @@ class KLDLoss:
 
     def __call__(self, outputs: Outputs, targets: Targets) -> dict[str, torch.Tensor]:
         q_mu = outputs.mu[0]
-        q_logvar = torch.clamp(outputs.log_var[0], min=-10.0, max=10.0)
+        q_logvar = soft_clamp(outputs.log_var[0], min_val=-10.0, max_val=10.0)
         prior_mu = _compute_prior_mu(q_mu, outputs, targets, self.dim_top_channel, self.scale_prior)
         kld_matrix = -1 - q_logvar + (q_mu - prior_mu) ** 2 + q_logvar.exp()
         kld_free_bits = F.softplus(kld_matrix - 2 * self.freebits) + 2 * self.freebits
@@ -110,8 +102,8 @@ class KLDLoss:
         if len(outputs.mu) > 1 and outputs.prior_log_var:
             zipped = zip(outputs.mu[1:], outputs.log_var[1:], outputs.prior_log_var, strict=False)
             for d_mu, d_logvar, p_logvar in zipped:
-                d_logvar = torch.clamp(d_logvar, min=-10.0, max=10.0)
-                p_logvar = torch.clamp(p_logvar, min=-5.0, max=10.0)
+                d_logvar = soft_clamp(d_logvar, min_val=-10.0, max_val=10.0)
+                p_logvar = soft_clamp(p_logvar, min_val=-5.0, max_val=10.0)
                 stage_matrix = -1 - d_logvar + d_logvar.exp() + (d_mu**2) * torch.exp(-p_logvar)
                 s_free_bits = F.softplus(stage_matrix - 2 * self.freebits) + 2 * self.freebits
 
@@ -153,13 +145,12 @@ def get_annealing() -> LossBase[Outputs, Targets]:
 def get_vae_loss() -> LossBase[Outputs, Targets]:
     """Get VAE loss composed with drytorch natural syntax."""
     cfg = Experiment.get_config()
-    c_KLD = cfg.autoencoder.objective.c_KLD
     nll = get_nll_loss()
     kld = get_kld_loss()
     if cfg.autoencoder.train.annealing_period > 0:
-        return nll + c_KLD * kld * get_annealing()
+        return nll + kld * get_annealing()
 
-    return nll + c_KLD * kld
+    return nll + kld
 
 
 def get_classifier_loss() -> LossBase:
