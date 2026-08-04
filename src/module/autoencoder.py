@@ -30,12 +30,12 @@ class Abstract_VAE(nn.Module, abc.ABC):
     n_channels: int
     dim_target: int
     x_dim: int
-    h_dims: list[int]
-    k_dims: list[int]
-    strides: list[int]
-    paddings: list[int]
-    z_dims: list[int]
-    depths: list[int]
+    h_dims: tuple[int, ...]
+    k_dims: tuple[int, ...]
+    strides: tuple[int, ...]
+    paddings: tuple[int, ...]
+    z_dims: tuple[int, ...]
+    depths: tuple[int, ...]
     l_dims_encoder: list[int]
     l_dims_decoder: list[int]
     flat_dim: int
@@ -47,12 +47,12 @@ class Abstract_VAE(nn.Module, abc.ABC):
         self.dim_target = len(exp_cfg.data.dataset.classes)
         vae_arch = exp_cfg.autoencoder.model.architecture
         self.x_dim = vae_arch.x_dim
-        self.h_dims = list(vae_arch.h_dims)
-        self.k_dims = list(vae_arch.k_dims)
-        self.strides = list(vae_arch.strides)
-        self.paddings = list(vae_arch.paddings)
-        self.z_dims = list(vae_arch.z_dims)
-        self.depths = list(vae_arch.depths)
+        self.h_dims = vae_arch.h_dims
+        self.k_dims = vae_arch.k_dims
+        self.strides = vae_arch.strides
+        self.paddings = vae_arch.paddings
+        self.z_dims = exp_cfg.autoencoder.model.z_dims
+        self.depths = vae_arch.depths
         self.l_dims_encoder, self.l_dims_decoder, self.flat_dim = self.size_calc()
         return
 

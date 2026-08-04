@@ -101,7 +101,6 @@ class VAEArchitectureConfig(BaseArchitectureConfig):
     k_dims: tuple[StrictlyPositiveInt, ...] = (3, 3, 3, 3, 3)
     strides: tuple[StrictlyPositiveInt, ...] = (2, 2, 2, 2, 2)
     paddings: tuple[PositiveInt, ...] = (1, 1, 1, 1, 1)
-    z_dims: tuple[StrictlyPositiveInt, ...] = (1, 2, 4, 8, 16, 32)
     depths: tuple[PositiveInt, ...] = (1, 1, 1, 1, 1)
     conditioning: Conditioning = Conditioning.ExplicitAndLearned
     inference_block: InferenceBlock = InferenceBlock.ADAIN
@@ -115,13 +114,11 @@ class ObjectiveConfig:
         nll_sigma: Standard deviation (sigma) of the Gaussian NLL reconstruction loss.
             The corresponding variance is ``nll_sigma ** 2``.
         scale_prior: Prior scaling factor for latent conditioning.
-        freebits: Free-bits threshold for KL divergence.
         posterior_weight: Weight applied to the posterior mean during generation.
     """
 
     nll_sigma: float = 0.1
     scale_prior: float = 5.0
-    freebits: float = 1.0
     posterior_weight: float = 1.0
 
 
@@ -132,14 +129,26 @@ class ModelConfig:
     Attributes:
         class_name: Model architecture variant to instantiate.
         architecture: VAE architecture hyperparameters.
+        z_dims: Per-stage latent dimensions; must match freebits in length.
+        freebits: Free-bits floor per latent stage.
         ema_decay: Exponential moving average decay rate for model weights.
         temperature: Temperature scaling factor for logits in conditional models (e.g. VAEX).
     """
 
     class_name: Models = Models.VAEX
     architecture: VAEArchitectureConfig = dataclasses.field(default_factory=VAEArchitectureConfig)
+    z_dims: tuple[StrictlyPositiveInt, ...] = (1, 2, 4, 8, 16, 32)
+    freebits: tuple[float, ...] = (0.5, 0.25, 0.125, 0.0625, 0.03125, 0.0)
     ema_decay: float = 0.999
     temperature: float = 5.0
+
+    @model_validator(mode='after')
+    def _check_freebits_matches_z_dims(self) -> Self:
+        if len(self.freebits) != len(self.z_dims):
+            msg = 'freebits (len {}) must match z_dims (len {}) in length.'
+            raise ValueError(msg.format(len(self.freebits), len(self.z_dims)))
+
+        return self
 
 
 @dataclass
