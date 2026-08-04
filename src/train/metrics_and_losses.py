@@ -123,11 +123,11 @@ class KLDLoss:
                 kld = kld + 0.5 * s_free_bits.mean(0).sum()
                 kld_real = kld_real + 0.5 * stage_matrix.mean(0).sum()
 
-        return {'KLD': kld, 'KLD_real': kld_real}
+        return {'KLD_FB': kld, 'KLD': kld_real}
 
 
 def get_kld_loss() -> LossBase[Outputs, Targets]:
-    """Get KL divergence loss component (free bits, annealed threshold) with KLD_real diagnostic metric."""
+    """Get KL divergence loss component (free bits, annealed threshold) with KLD diagnostic metric."""
     cfg = Experiment.get_config()
     objective_cfg = cfg.autoencoder.objective
     vae_arch = cfg.autoencoder.model.architecture
@@ -139,7 +139,7 @@ def get_kld_loss() -> LossBase[Outputs, Targets]:
         dim_top_channel=dim_top_channel,
         annealing_period=cfg.autoencoder.train.annealing_period,
     )
-    return DictLoss(kld_fn, name='KLD')
+    return DictLoss(kld_fn, name='KLD_FB')
 
 
 def get_vae_loss() -> LossBase[Outputs, Targets]:
