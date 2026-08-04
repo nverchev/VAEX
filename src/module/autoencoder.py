@@ -9,7 +9,7 @@ import torch.nn as nn
 from typing import override
 
 from src.config.experiment import Experiment
-from src.config.options import Models
+from src.config.options import Models, InferenceBlock
 from src.data.structures import Inputs, Outputs
 from src.module.layers import (
     ConvBlock,
@@ -18,6 +18,7 @@ from src.module.layers import (
     NullOp,
     ResBlock,
     ToLatentConvADAIN,
+    ToLatentConvMobile,
     View,
     reverse_zip,
     soft_clamp,
@@ -160,6 +161,7 @@ class CVAE(Abstract_VAE):
         super().__init__()
         cfg = Experiment.get_config()
         self.act_cls = cfg.autoencoder.model.architecture.act_cls
+        self.inference_block = cfg.autoencoder.model.architecture.inference_block
         *self.c_z_dims, _ = self.z_dims
         *self.resolutions, _ = self.l_dims_encoder
         self.aux_dim = self.final_z_dim + (self.dim_target > 0)
@@ -197,7 +199,10 @@ class CVAE(Abstract_VAE):
             )
             self.encoding.append(encode)
 
-        self.final_inference = ToLatentConvADAIN(self.h_dims[-1], self.final_z_dim, self.final_res, 0)
+        if self.inference_block == InferenceBlock.Mobile:
+            self.final_inference = ToLatentConvMobile(self.h_dims[-1], self.final_z_dim, self.final_res, 0)
+        else:
+            self.final_inference = ToLatentConvADAIN(self.h_dims[-1], self.final_z_dim, self.final_res, 0)
 
     def _build_decoder_layers(self) -> None:
         self.map_condition_decoder = LinearLayer(
@@ -234,9 +239,13 @@ class CVAE(Abstract_VAE):
             self.decode_list.append(decode)
             if z_dim:
                 from_latent = FromLatentConv(h_out, z_dim, res)
-                generate = ToLatentConvADAIN(h_out, z_dim, res, aux_dim)
+                if self.inference_block == InferenceBlock.Mobile:
+                    generate = ToLatentConvMobile(h_out, z_dim, res, aux_dim)
+                    inference = ToLatentConvMobile(h_out, z_dim, res)
+                else:
+                    generate = ToLatentConvADAIN(h_out, z_dim, res, aux_dim)
+                    inference = ToLatentConvADAIN(h_out, z_dim, res)
                 merge = ConvBlock(2 * h_out, h_out)
-                inference = ToLatentConvADAIN(h_out, z_dim, res)
                 self.inference_list.append(inference)
                 self.generate_list.append(generate)
                 self.from_latent_list.append(from_latent)

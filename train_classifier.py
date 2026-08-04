@@ -10,7 +10,7 @@ from src.module.classifier import get_classifier
 from src.train import get_learning_schema, get_loaders
 from src.train.hooks import register_checkpointing, register_early_stopping, register_pruning
 from src.train.metrics_and_losses import get_accuracy, get_classifier_loss
-from src.train.models import ClassifierEMAModel, ClassifierModel
+from src.train.models import ClassifierModel
 from src.utils.parallel import DistributedWorker
 
 if TYPE_CHECKING:
@@ -27,11 +27,7 @@ def train_classification(trial: Trial | None = None) -> None:
     user_cfg = cfg.user
     class_cfg = cfg.classification
     architecture = get_classifier()
-    if trial is None:
-        model = ClassifierEMAModel(architecture, name=class_cfg.name, device=user_cfg.device)
-    else:
-        model = ClassifierModel(architecture, name=class_cfg.name, device=user_cfg.device)
-
+    model = ClassifierModel(architecture, name=class_cfg.name, device=user_cfg.device)
     train_loader, eval_loader = get_loaders(
         batch_size=class_cfg.train.batch_size_per_device, n_workers=user_cfg.n_workers
     )

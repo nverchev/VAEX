@@ -15,7 +15,6 @@ from drytorch.core import exceptions as dry_exc
 
 
 ClassifierModel = Model[Inputs, torch.Tensor]
-ClassifierEMAModel = EMAModel[Inputs, torch.Tensor]
 
 
 class LogEpochMixin(p.ModelProtocol[Inputs, Outputs]):

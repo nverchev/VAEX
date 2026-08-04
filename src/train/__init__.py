@@ -7,7 +7,7 @@ from src.train.metrics_and_losses import get_classifier_loss, get_accuracy
 
 __all__ = [
     'get_accuracy',
+    'get_classifier_loss',
     'get_learning_schema',
     'get_loaders',
-    'get_classifier_loss',
 ]

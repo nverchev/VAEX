@@ -249,7 +249,8 @@ class Conv2dLayer(BaseLayer):
     @override
     def get_module(self) -> nn.Module:
         return nn.Conv2d(
-            self.in_dim, self.out_dim,
+            self.in_dim,
+            self.out_dim,
             kernel_size=self.kernel_size,
             stride=self.stride,
             padding=self.padding,
@@ -283,7 +284,8 @@ class ConvTranspose2dLayer(BaseLayer):
     @override
     def get_module(self) -> nn.Module:
         return nn.ConvTranspose2d(
-            self.in_dim, self.out_dim,
+            self.in_dim,
+            self.out_dim,
             kernel_size=self.kernel_size,
             stride=self.stride,
             padding=self.padding,
@@ -293,6 +295,8 @@ class ConvTranspose2dLayer(BaseLayer):
 
 
 Layer = TypeVar('Layer', bound=BaseLayer)
+
+
 class SqueezeExcite(nn.Module):
     """Squeeze-and-Excitation block for 4D feature maps."""
 
@@ -311,9 +315,12 @@ class SqueezeExcite(nn.Module):
         return inputs.mul(x)
 
 
-
 class ConvBlock(nn.Module):
-    """Pre-activation convolutional block: norm → act → Conv2dLayer."""
+    """Post-activation convolutional block: Conv2dLayer → norm → act.
+
+    Args:
+        use_trunc_init: if True, skips norm/act to keep a near-zero output.
+    """
 
     def __init__(
         self,
@@ -328,14 +335,61 @@ class ConvBlock(nn.Module):
         super().__init__()
         self.stride = stride
         LayerCls = ConvTranspose2dLayer if deconv else Conv2dLayer
+        self.block = LayerCls(
+            h_in,
+            h_out,
+            kernel_size=kernel_size,
+            stride=stride,
+            padding=padding,
+            act_cls=None if use_trunc_init else BatchAct,
+            norm_cls=None if use_trunc_init else BatchNorm,
+            use_trunc_init=use_trunc_init,
+        )
+        return
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.block(x)
+
+
+class MobileBlock(nn.Module):
+    """Mobile inverted bottleneck block."""
+
+    def __init__(
+        self,
+        h_in: int,
+        h_out: int,
+        deconv: bool = False,
+        kernel_size: int = 5,
+        stride: int = 1,
+        padding: int = 2,
+        expansion_factor: int = 4,
+    ) -> None:
+        super().__init__()
+        h_exp = h_in * expansion_factor
+        self.stride = stride
+        LayerCls = ConvTranspose2dLayer if deconv else Conv2dLayer
         self.block = nn.Sequential(
-            BatchNorm(h_in),
-            BatchAct(),
+            Conv2dLayer(
+                h_in,
+                h_exp,
+                kernel_size=1,
+                stride=1,
+                padding=0,
+                groups=1,
+                act_cls=BatchAct,
+                norm_cls=BatchNorm,
+                ),
             LayerCls(
-                h_in, h_out,
-                kernel_size=kernel_size, stride=stride, padding=padding,
-                use_trunc_init=use_trunc_init,
-            ),
+                h_exp,
+                h_exp,
+                kernel_size=kernel_size,
+                stride=stride,
+                padding=padding,
+                groups=h_exp,
+                act_cls=BatchAct,
+                norm_cls=BatchNorm,
+                ),
+            Conv2dLayer(h_exp, h_out, kernel_size=1, stride=1, padding=0, groups=1, act_cls=None, norm_cls=BatchNorm),
         )
         return
 
@@ -442,6 +496,32 @@ class ToLatentConvADAIN(nn.Module):
         if aux is not None:
             mu, std = self.aux_conv(aux).chunk(2, 1)
             x = F.instance_norm(x) * torch.sigmoid(std) + mu
+
+        x = self.tolatent(x)
+        return x.flatten(1).chunk(2, 1)
+
+
+class ToLatentConvMobile(nn.Module):
+    """Inference block using MobileBlock and concatenation."""
+
+    def __init__(self, h_dim: int, z_dim: int, l_dim: int, aux_dim: int = 0) -> None:
+        super().__init__()
+        if aux_dim:
+            self.aux_conv = nn.Sequential(
+                View(-1, aux_dim, (l_dim + 3) // 4, (l_dim + 3) // 4),
+                MobileBlock(aux_dim, aux_dim, deconv=True, kernel_size=5, stride=4, padding=2),
+                SqueezeExcite(aux_dim),
+            )
+        else:
+            self.aux_conv = None
+
+        self.tolatent = Conv2dLayer(h_dim + aux_dim, 2 * z_dim, kernel_size=3, stride=2, padding=1, use_trunc_init=True)
+        return
+
+    def forward(self, x: torch.Tensor, aux: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
+        if aux is not None and self.aux_conv is not None:
+            aux = self.aux_conv(aux)
+            x = torch.cat([x, aux], dim=1)
 
         x = self.tolatent(x)
         return x.flatten(1).chunk(2, 1)

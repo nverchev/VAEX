@@ -30,6 +30,14 @@ class Conditioning(enum.StrEnum):
     """Combined explicit and learned conditioning."""
 
 
+class InferenceBlock(enum.StrEnum):
+    """Inference block architecture variant."""
+
+    ADAIN = enum.auto()
+    """Adaptive Instance Normalization based inference block."""
+    Mobile = enum.auto()
+    """Mobile inverted bottleneck based inference block with concatenation."""
+
 
 class GradOp(enum.StrEnum):
     """Gradient operation names."""

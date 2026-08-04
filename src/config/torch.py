@@ -11,18 +11,6 @@ type ActClass = type[nn.Module]
 type NormClass = type[nn.Module]
 
 
-class WobblyBatchNorm(nn.Module):
-    """BatchNorm2d with increased momentum for stability in deep generative models."""
-
-    def __init__(self, h_in: int) -> None:
-        super().__init__()
-        self.bn = nn.BatchNorm2d(h_in, eps=1e-6, momentum=0.2)
-        return
-
-    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
-        return self.bn(inputs)
-
-
 class GroupedNorm(nn.GroupNorm):
     """GroupNorm subclass that automatically computes the optimal number of groups for num_channels."""
 
@@ -36,7 +24,7 @@ class GroupedNorm(nn.GroupNorm):
 
 
 DEFAULT_ACT: ActClass = nn.ELU
-DEFAULT_NORM: NormClass = WobblyBatchNorm
+DEFAULT_NORM: NormClass = nn.BatchNorm2d
 
 
 def get_activation_cls(act_name: str) -> ActClass:
@@ -49,9 +37,6 @@ def get_activation_cls(act_name: str) -> ActClass:
 
 def get_norm_cls(norm_name: str) -> NormClass:
     """Get normalization class from name."""
-    if norm_name == 'WobblyBatchNorm':
-        return WobblyBatchNorm
-
     if norm_name == 'GroupedNorm':
         return GroupedNorm
 

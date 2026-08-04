@@ -40,6 +40,7 @@ from src.config.options import (
     Models,
     Datasets,
     Conditioning,
+    InferenceBlock,
 )
 
 
@@ -103,9 +104,10 @@ class VAEArchitectureConfig(BaseArchitectureConfig):
     z_dims: tuple[StrictlyPositiveInt, ...] = (1, 2, 4, 8, 16, 32)
     depths: tuple[PositiveInt, ...] = (1, 1, 1, 1, 1)
     conditioning: Conditioning = Conditioning.ExplicitAndLearned
+    inference_block: InferenceBlock = InferenceBlock.ADAIN
 
 
-@dataclass
+@dataclass(kw_only=True)
 class ObjectiveConfig:
     """Specification for Autoencoder / VAE loss objective and metrics parameters.
 
