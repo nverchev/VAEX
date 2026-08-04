@@ -109,13 +109,19 @@ class Abstract_VAE(nn.Module, abc.ABC):
         out.z = []
         flat_z_dim = self.final_z_dim * ((self.final_res + 1) // 2) ** 2
         sample = torch.randn(batch_size, flat_z_dim, device=next(self.parameters()).device)
+        sample = sample * self.sampling_temperature(0)
         return self.decode(out, condition=condition, sample=sample).recon
 
-    def sampling(self, mu: torch.Tensor, log_var: torch.Tensor) -> torch.Tensor:
+    def sampling_temperature(self, level: int) -> float:
+        """Eval-mode sampling temperature: 0 at the coarsest (top) latent, 1 at the finest (pixel-closest)."""
+        n_levels = len(self.z_dims)
+        return level / (n_levels - 1) if n_levels > 1 else 1.0
+
+    def sampling(self, mu: torch.Tensor, log_var: torch.Tensor, temperature: float = 1.0) -> torch.Tensor:
         clamped_logvar = soft_clamp(log_var, min_val=-10.0, max_val=10.0)
         std = torch.exp(0.5 * clamped_logvar)
         eps = torch.randn_like(std)
-        z = eps.mul(std).add_(mu) if self.training else eps.mul(std / 3.0).add_(mu)
+        z = eps.mul(std).add_(mu) if self.training else eps.mul(std * temperature).add_(mu)
         return z
 
     def size_calc(self) -> tuple[list[int], list[int], int]:
@@ -292,7 +298,7 @@ class CVAE(Abstract_VAE):
             x = encode(x)
 
         mu, log_var = self.final_inference(x)
-        z = self.sampling(mu, log_var)
+        z = self.sampling(mu, log_var, temperature=self.sampling_temperature(0))
         out.mu.append(mu)
         out.log_var.append(log_var)
         out.z.append(z)
@@ -316,24 +322,26 @@ class CVAE(Abstract_VAE):
         z = torch.cat([z, cond_latent], dim=1)
         h = self.h.expand(z.size(0), -1, -1, -1)
         x = self.back_to_img(z, h)
-        for decode, from_latent, generate, inference, merge in zip(
+        zipped = zip(
             self.decode_list, self.from_latent_list, self.generate_list, self.inference_list, self.merge, strict=False
-        ):
+        )
+        for level, (decode, from_latent, generate, inference, merge) in enumerate(zipped, start=1):
             x = decode(x)
             h = out.hidden.pop() if sample is None and out.hidden else None
             if h is not None:
                 out.hidden.insert(0, h)
 
             if not isinstance(from_latent, NullOp):
+                temperature = self.sampling_temperature(level)
                 p_mu, p_logvar = generate(x, z)
                 if sample is None and h is not None:
                     h = merge(torch.cat([x, h], dim=1))
                     mu, log_var = inference(h)
-                    z = self.sampling(posterior_weight * mu + p_mu, log_var + p_logvar)
+                    z = self.sampling(posterior_weight * mu + p_mu, log_var + p_logvar, temperature=temperature)
                     out.mu.append(mu)
                     out.log_var.append(log_var)
                 else:
-                    z = self.sampling(p_mu, p_logvar)
+                    z = self.sampling(p_mu, p_logvar, temperature=temperature)
 
                 x = from_latent(z, x)
                 out.prior_mu.append(p_mu)
