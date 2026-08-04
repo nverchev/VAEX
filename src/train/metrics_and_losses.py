@@ -78,25 +78,39 @@ def _compute_prior_mu(
 
 
 class KLDLoss:
-    """Callable class for KL divergence loss calculation with freebits and raw KLD metric."""
+    """Callable class for KL divergence loss with annealing free-bits."""
 
     def __init__(
         self,
         freebits: float,
         scale_prior: float,
         dim_top_channel: int,
+        annealing_period: int,
     ) -> None:
         self.freebits = freebits
         self.scale_prior = scale_prior
         self.dim_top_channel = dim_top_channel
+        self.annealing_period = annealing_period
         return
 
+    def _current_freebits(self, outputs: Outputs) -> torch.Tensor:
+        """Free-bits threshold to protect agains posterior collapse."""
+        device = outputs.recon.device
+        if self.annealing_period <= 0:
+            return torch.tensor(self.freebits, device=device)
+
+        time_fraction = torch.tensor(outputs.model_epoch / self.annealing_period, device=device)
+        time_fraction = torch.clamp(time_fraction, 0.0, 1.0)
+        decay = 0.5 * (1.0 + torch.cos(time_fraction * math.pi))
+        return self.freebits * decay
+
     def __call__(self, outputs: Outputs, targets: Targets) -> dict[str, torch.Tensor]:
+        freebits = self._current_freebits(outputs)
         q_mu = outputs.mu[0]
         q_logvar = soft_clamp(outputs.log_var[0], min_val=-10.0, max_val=10.0)
         prior_mu = _compute_prior_mu(q_mu, outputs, targets, self.dim_top_channel, self.scale_prior)
         kld_matrix = -1 - q_logvar + (q_mu - prior_mu) ** 2 + q_logvar.exp()
-        kld_free_bits = F.softplus(kld_matrix - 2 * self.freebits) + 2 * self.freebits
+        kld_free_bits = F.softplus(kld_matrix - 2 * freebits) + 2 * freebits
         kld = 0.5 * kld_free_bits.mean(0).sum()
         kld_real = 0.5 * kld_matrix.mean(0).sum()
         if len(outputs.mu) > 1 and outputs.prior_log_var:
@@ -105,8 +119,7 @@ class KLDLoss:
                 d_logvar = soft_clamp(d_logvar, min_val=-10.0, max_val=10.0)
                 p_logvar = soft_clamp(p_logvar, min_val=-5.0, max_val=10.0)
                 stage_matrix = -1 - d_logvar + d_logvar.exp() + (d_mu**2) * torch.exp(-p_logvar)
-                s_free_bits = F.softplus(stage_matrix - 2 * self.freebits) + 2 * self.freebits
-
+                s_free_bits = F.softplus(stage_matrix - 2 * freebits) + 2 * freebits
                 kld = kld + 0.5 * s_free_bits.mean(0).sum()
                 kld_real = kld_real + 0.5 * stage_matrix.mean(0).sum()
 
@@ -114,7 +127,7 @@ class KLDLoss:
 
 
 def get_kld_loss() -> LossBase[Outputs, Targets]:
-    """Get KL divergence loss component with KLD_real metric."""
+    """Get KL divergence loss component (free bits, annealed threshold) with KLD_real diagnostic metric."""
     cfg = Experiment.get_config()
     objective_cfg = cfg.autoencoder.objective
     vae_arch = cfg.autoencoder.model.architecture
@@ -124,32 +137,15 @@ def get_kld_loss() -> LossBase[Outputs, Targets]:
         freebits=objective_cfg.freebits,
         scale_prior=objective_cfg.scale_prior,
         dim_top_channel=dim_top_channel,
+        annealing_period=cfg.autoencoder.train.annealing_period,
     )
     return DictLoss(kld_fn, name='KLD')
 
 
-def get_annealing() -> LossBase[Outputs, Targets]:
-    """Get (reverse) annealing component matching SurfaceVAE."""
-    cfg = Experiment.get_config()
-    annealing_period = cfg.autoencoder.train.annealing_period
-
-    def _annealing(outputs: Outputs, _: Targets) -> torch.Tensor:
-        device = outputs.recon.device
-        time_fraction = torch.tensor(outputs.model_epoch / annealing_period, device=device)
-        time_fraction = torch.clamp(time_fraction, 0.0, 1.0)
-        return 0.5 * (1.0 - torch.cos(time_fraction * math.pi))
-
-    return Loss(_annealing, name='Annealing')
-
-
 def get_vae_loss() -> LossBase[Outputs, Targets]:
     """Get VAE loss composed with drytorch natural syntax."""
-    cfg = Experiment.get_config()
     nll = get_nll_loss()
     kld = get_kld_loss()
-    if cfg.autoencoder.train.annealing_period > 0:
-        return nll + kld * get_annealing()
-
     return nll + kld
 
 
