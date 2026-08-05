@@ -90,12 +90,10 @@ class VAEArchitectureConfig(BaseArchitectureConfig):
     """Hierarchical VAE architecture parameters.
 
     Attributes:
-        x_dim: The spatial dimension (width/height) of the input image.
         n_resolutions: The number of distinct spatial resolutions in the hierarchy.
         h_dims: The number of feature channels at each resolution stage.
     """
 
-    x_dim: StrictlyPositiveInt = 129
     n_resolutions: StrictlyPositiveInt = 5
     h_dims: tuple[StrictlyPositiveInt, ...] = (16, 32, 64, 128, 256, 512)
     k_dims: tuple[StrictlyPositiveInt, ...] = (3, 3, 3, 3, 3)
@@ -114,13 +112,22 @@ class ObjectiveConfig:
         nll_sigma: Standard deviation (sigma) of the Gaussian NLL reconstruction loss.
             The corresponding variance is ``nll_sigma ** 2``.
         scale_prior: Prior scaling factor for latent conditioning.
-        posterior_weight: Weight applied to the posterior mean during generation.
-        sampling_variance: Sampling variance per latent stage.
+        posterior_weights: Per-stage weight on the posterior mean and log-variance
+            offsets, one entry per latent stage. ``1.0`` keeps the stage posterior,
+            ``0.0`` falls back to the stage prior. Passed to the model as an argument;
+            entry points read it from here rather than the model holding it.
+        sampling_temperature: Temperature scaling for latent noise during generation.
+            1.0 uses full learned variance; lower values reduce diversity.
+        sampling_variance: Per-stage multiplier on the sampling standard deviation,
+            applied at inference only. ``0.0`` decodes the posterior mean; ``1.0`` draws
+            with the full learned scale. Note this scales sigma, so the variance moves
+            with its square.
     """
 
     nll_sigma: float = 0.1
     scale_prior: float = 5.0
-    posterior_weight: float = 1.0
+    posterior_weights: tuple[float, ...] = (1.0, 1.0, 1.0, 1.0, 1.0, 1.0)
+    sampling_temperature: float = 1.0
     sampling_variance: tuple[float, ...] = (0.0, 0.2, 0.4, 0.6, 0.8, 1.0)
 
 
@@ -129,7 +136,7 @@ class ModelConfig:
     """Model class selector and non-architectural settings.
 
     Attributes:
-        class_name: Model architecture variant to instantiate.
+        name: Model architecture variant to instantiate.
         architecture: VAE architecture hyperparameters.
         z_dims: Per-stage latent dimensions; must match freebits in length.
         freebits: Free-bits floor per latent stage.
@@ -137,7 +144,7 @@ class ModelConfig:
         temperature: Temperature scaling factor for logits in conditional models (e.g. VAEX).
     """
 
-    class_name: Models = Models.VAEX
+    name: Models = Models.VAEX
     architecture: VAEArchitectureConfig = dataclasses.field(default_factory=VAEArchitectureConfig)
     z_dims: tuple[StrictlyPositiveInt, ...] = (1, 2, 4, 8, 16, 32)
     freebits: tuple[float, ...] = (0.5, 0.25, 0.125, 0.0625, 0.03125, 0.0)
@@ -203,10 +210,10 @@ class SchedulerConfig:
             constructor (e.g. ``decay_steps``, ``min_decay``).
     """
 
-    function: Schedulers
-    restart_interval: PositiveInt
-    restart_fraction: PositiveFloat
-    warmup_steps: PositiveInt
+    function: Schedulers = Schedulers.Cosine
+    restart_interval: PositiveInt = 0
+    restart_fraction: PositiveFloat = 1.0
+    warmup_steps: PositiveInt = 0
     settings: dict[str, Any] = dataclasses.field(default_factory=dict)
 
 
@@ -225,9 +232,9 @@ class LearningConfig:
             constructor (e.g. ``weight_decay``).
     """
 
-    optimizer_name: str
-    learning_rate: PositiveFloat
-    scheduler: SchedulerConfig
+    optimizer_name: str = 'AdamW'
+    learning_rate: PositiveFloat = 1e-3
+    scheduler: SchedulerConfig = dataclasses.field(default_factory=SchedulerConfig)
     grad_op: GradOp | None = None
     clip_criterion: ClipCriterion | None = ClipCriterion.EMA
     opt_settings: dict[str, Any] = dataclasses.field(default_factory=dict)
@@ -256,7 +263,7 @@ class EarlyStoppingConfig:
         patience: Epochs to wait for improvement before stopping.
     """
 
-    active: bool
+    active: bool = False
     window: int = 1
     patience: int = 10
 
@@ -272,11 +279,11 @@ class TrainingConfig:
         early_stopping: Early stopping configuration.
     """
 
-    batch_size: StrictlyPositiveInt
-    learn: LearningConfig
-    n_epochs: StrictlyPositiveInt
-    early_stopping: EarlyStoppingConfig
-    _n_subprocesses: PositiveInt
+    batch_size: StrictlyPositiveInt = 32
+    learn: LearningConfig = dataclasses.field(default_factory=LearningConfig)
+    n_epochs: StrictlyPositiveInt = 10
+    early_stopping: EarlyStoppingConfig = dataclasses.field(default_factory=EarlyStoppingConfig)
+    _n_subprocesses: PositiveInt = 0
     annealing_period: int = 45
 
     @model_validator(mode='after')
@@ -297,19 +304,50 @@ class TrainingConfig:
 
 
 @dataclass
-class ExperimentConfig:
-    """Specification for a single subexperiment."""
+class BaseExperimentConfig:
+    """Base specification for an experiment task.
+
+    Attributes:
+        name: Subexperiment identifier.
+        train: Training loop configuration.
+    """
 
     name: str
-    model: ModelConfig
     train: TrainingConfig
+
+
+@dataclass
+class ClassificationExperimentConfig(BaseExperimentConfig):
+    """Specification for a classification experiment task.
+
+    Attributes:
+        model: Classifier model architecture configuration.
+    """
+
+    model: LinearArchitectureConfig = dataclasses.field(default_factory=LinearArchitectureConfig)
+
+
+@dataclass
+class AutoencoderExperimentConfig(BaseExperimentConfig):
+    """Specification for an autoencoder / VAE experiment task.
+
+    Attributes:
+        model: VAE model configuration.
+        objective: VAE loss objective and metrics configuration.
+    """
+
+    model: ModelConfig = dataclasses.field(default_factory=ModelConfig)
     objective: ObjectiveConfig = dataclasses.field(default_factory=ObjectiveConfig)
 
     @model_validator(mode='after')
-    def _check_sampling_variance_matches_z_dims(self) -> Self:
+    def _check_objective_tuples_match_z_dims(self) -> Self:
         if len(self.objective.sampling_variance) != len(self.model.z_dims):
             msg = 'sampling_variance (len {}) in objective must match z_dims (len {}) in model.'
             raise ValueError(msg.format(len(self.objective.sampling_variance), len(self.model.z_dims)))
+
+        if len(self.objective.posterior_weights) != len(self.model.z_dims):
+            msg = 'posterior_weights (len {}) in objective must match z_dims (len {}) in model.'
+            raise ValueError(msg.format(len(self.objective.posterior_weights), len(self.model.z_dims)))
 
         return self
 
@@ -439,8 +477,8 @@ class AllConfig:
         tags: List of tags describing active configuration overrides.
     """
 
-    classification: ExperimentConfig
-    autoencoder: ExperimentConfig
+    classification: ClassificationExperimentConfig
+    autoencoder: AutoencoderExperimentConfig
     user: UserSettings
     data: DataConfig
     final: bool

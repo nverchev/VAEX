@@ -30,7 +30,7 @@ def reconstruct_samples() -> None:
     dataset = get_dataset(partition)
     assert isinstance(dataset, Sized)
     vae_module = load_extract_autoencoder_module()
-    if cfg.autoencoder.model.class_name == Models.VAEX:
+    if cfg.autoencoder.model.name == Models.VAEX:
         classifier = load_extract_classifier_module()
     else:
         classifier = None

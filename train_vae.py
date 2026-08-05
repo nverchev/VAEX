@@ -33,7 +33,7 @@ def train_vae(trial: Trial | None = None) -> None:
     else:
         model = VAEModel(architecture, name=vae_cfg.name, device=user_cfg.device)
 
-    if vae_cfg.model.class_name == Models.VAEX:
+    if vae_cfg.model.name == Models.VAEX:
         classifier = load_extract_classifier_module()
     else:
         classifier = None
@@ -72,7 +72,7 @@ def train_vae(trial: Trial | None = None) -> None:
 
 def setup_and_train(cfg: AllConfig) -> None:
     trackers = get_trackers(cfg, DEBUG_MODE)
-    resume = cfg.user.load != 0 or cfg.autoencoder.model.class_name == Models.VAEX
+    resume = cfg.user.load != 0 or cfg.autoencoder.model.name == Models.VAEX
     exp = Experiment(cfg, name=cfg.name, par_dir=cfg.user.path.version_dir, tags=cfg.tags)
     for tracker in trackers:
         exp.trackers.subscribe(tracker)

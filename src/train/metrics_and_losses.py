@@ -61,31 +61,11 @@ def get_nll_loss() -> LossBase[Outputs, Targets]:
     return DictLoss(NLLLoss(sigma=objective_cfg.nll_sigma), name='NLL')
 
 
-def _compute_prior_mu(
-    q_mu: torch.Tensor,
-    outputs: Outputs,
-    _: Targets,
-    dim_top_channel: int,
-    scale_prior: float,
-) -> torch.Tensor:
-    """Compute prior mean tensor based on targets/conditions."""
-    prior_mu = torch.zeros_like(q_mu)
-    cond = outputs.condition
-    if cond.dim() == 1:
-        cond = cond.unsqueeze(1)
-    for c in range(cond.size(1)):
-        prior_mu[:, c * dim_top_channel : (c + 1) * dim_top_channel] = cond[:, c].view(-1, 1) * scale_prior
-
-    return prior_mu
-
-
 class KLDLoss:
     """Callable class for KL divergence loss, with a free-bits floor per latent stage."""
 
-    def __init__(self, freebits: Sequence[float], scale_prior: float, dim_top_channel: int) -> None:
+    def __init__(self, freebits: Sequence[float]) -> None:
         self.freebits = freebits
-        self.scale_prior = scale_prior
-        self.dim_top_channel = dim_top_channel
         return
 
     @staticmethod
@@ -93,40 +73,32 @@ class KLDLoss:
         offset = 2 * freebits - F.softplus(torch.tensor(-2 * freebits))
         return F.softplus(matrix - 2 * freebits) + offset
 
-    def __call__(self, outputs: Outputs, targets: Targets) -> dict[str, torch.Tensor]:
-        q_mu = outputs.mu[0]
-        q_logvar = soft_clamp(outputs.log_var[0], min_val=-10.0, max_val=10.0)
-        prior_mu = _compute_prior_mu(q_mu, outputs, targets, self.dim_top_channel, self.scale_prior)
-        kld_matrix = -1 - q_logvar + (q_mu - prior_mu) ** 2 + q_logvar.exp()
-        free_bits = self._free_bits(kld_matrix, self.freebits[0])
-        kld = 0.5 * free_bits.mean(0).sum()
-        kld_real = 0.5 * kld_matrix.mean(0).sum()
-        if len(outputs.mu) > 1 and outputs.prior_log_var:
-            zipped = zip(outputs.mu[1:], outputs.log_var[1:], outputs.prior_log_var, self.freebits[1:], strict=False)
-            for d_mu, d_logvar, p_logvar, stage_freebits in zipped:
-                d_logvar = soft_clamp(d_logvar, min_val=-10.0, max_val=10.0)
-                p_logvar = soft_clamp(p_logvar, min_val=-10.0, max_val=10.0)
-                stage_matrix = -1 - d_logvar + d_logvar.exp() + (d_mu**2) * torch.exp(-p_logvar)
-                stage_free_bits = self._free_bits(stage_matrix, stage_freebits)
-                kld = kld + 0.5 * stage_free_bits.mean(0).sum()
-                kld_real = kld_real + 0.5 * stage_matrix.mean(0).sum()
+    def __call__(self, outputs: Outputs, _: Targets) -> dict[str, torch.Tensor]:
+        # p_mu + d_mu = mu, p_logvar + d_logvar = logvar
+        kld = torch.zeros((), device=outputs.recon.device)
+        kld_real = torch.zeros((), device=outputs.recon.device)
+        metrics: dict[str, torch.Tensor] = {}
+        zipped = zip(outputs.d_mu, outputs.d_logvar, outputs.prior_log_var, self.freebits, strict=False)
+        for i, (d_mu, d_logvar, p_logvar, stage_freebits) in enumerate(zipped):
+            d_logvar = soft_clamp(d_logvar, min_val=-10.0, max_val=10.0)
+            p_logvar = soft_clamp(p_logvar, min_val=-10.0, max_val=10.0)
+            stage_matrix = -1 - d_logvar + d_logvar.exp() + (d_mu**2) * torch.exp(-p_logvar)
+            stage_free_bits = self._free_bits(stage_matrix, stage_freebits)
+            stage_kld_fb = 0.5 * stage_free_bits.mean(0).sum()
+            stage_kld = 0.5 * stage_matrix.mean(0).sum()
+            kld = kld + stage_kld_fb
+            kld_real = kld_real + stage_kld
+            metrics[f'KLD_stage_{i}'] = stage_kld
 
-        return {'KLD_FB': kld, 'KLD': kld_real}
+        metrics['KLD_FB'] = kld
+        metrics['KLD'] = kld_real
+        return metrics
 
 
 def get_kld_loss() -> LossBase[Outputs, Targets]:
     """Get KL divergence loss component (free bits floor per latent stage)."""
     cfg = Experiment.get_config()
-    objective_cfg = cfg.autoencoder.objective
-    model_cfg = cfg.autoencoder.model
-    n_resolutions = model_cfg.architecture.n_resolutions
-    dim_top_channel = (2 ** (6 - n_resolutions) + 1) ** 2
-    kld_fn = KLDLoss(
-        freebits=model_cfg.freebits,
-        scale_prior=objective_cfg.scale_prior,
-        dim_top_channel=dim_top_channel,
-    )
-    return DictLoss(kld_fn, name='KLD_FB')
+    return DictLoss(KLDLoss(freebits=cfg.autoencoder.model.freebits), name='KLD_FB')
 
 
 def get_annealing() -> LossBase[Outputs, Targets]:

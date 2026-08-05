@@ -20,7 +20,6 @@ from src.module.layers import (
     ToLatentBlock,
     ToLatentConvADAIN,
     ToLatentConvMobile,
-    View,
     reverse_zip,
     soft_clamp,
 )
@@ -32,7 +31,6 @@ class Abstract_VAE(nn.Module, abc.ABC):
     n_channels: int
     dim_target: int
     x_dim: int
-    aux_dim: int
     z_dims: tuple[int, ...]
     sampling_variance: tuple[float, ...]
 
@@ -41,11 +39,15 @@ class Abstract_VAE(nn.Module, abc.ABC):
         exp_cfg = Experiment.get_config()
         self.n_channels = exp_cfg.data.n_channels
         self.dim_target = len(exp_cfg.data.dataset.classes)
-        self.x_dim = exp_cfg.autoencoder.model.architecture.x_dim
+        self.x_dim = exp_cfg.data.x_dim
         self.z_dims = exp_cfg.autoencoder.model.z_dims
         self.sampling_variance = exp_cfg.autoencoder.objective.sampling_variance
-        self.aux_dim = self.final_z_dim + (self.dim_target > 0)
         return
+
+    @property
+    def full_posterior_weights(self) -> tuple[float, ...]:
+        """Per-stage weights that keep the entire posterior, as used for reconstruction."""
+        return (1.0,) * len(self.z_dims)
 
     @property
     @abc.abstractmethod
@@ -66,27 +68,31 @@ class Abstract_VAE(nn.Module, abc.ABC):
         """Sample a random condition tensor."""
 
     @abc.abstractmethod
-    def encode(self, x: torch.Tensor, condition: torch.Tensor | None = None) -> Outputs:
+    def encode(self, x: torch.Tensor) -> Outputs:
         """Encode input into latent space."""
 
     @abc.abstractmethod
     def decode(
         self,
         out: Outputs,
-        condition: torch.Tensor | None = None,
-        sample: torch.Tensor | None = None,
-        posterior_weight: float = 1.0,
+        condition: torch.Tensor,
+        posterior_weights: tuple[float, ...],
     ) -> Outputs:
-        """Decode latent space into reconstruction."""
+        """Decode latent space into reconstruction.
+
+        Args:
+            out: encoder output, or an empty instance to decode from the priors alone.
+            condition: conditioning vector parameterising the root prior.
+            posterior_weights: per-stage weight on the posterior offsets, one entry per
+                latent stage. ``1.0`` keeps the stage posterior, ``0.0`` falls back to
+                the stage prior.
+        """
 
     def forward(self, inputs: Inputs, **kwargs) -> Outputs:
-        if not isinstance(inputs, Inputs):
-            raise TypeError(f'{self.__class__.__name__} requires Inputs dataclass')
-
         x = inputs.image
         condition = self.condition_from(inputs)
-        out = self.encode(x, condition=condition)
-        out = self.decode(out, condition=condition)
+        out = self.encode(x)
+        out = self.decode(out, condition, self.full_posterior_weights)
         out.image = x
         out.condition = condition
         return out
@@ -95,18 +101,30 @@ class Abstract_VAE(nn.Module, abc.ABC):
         self,
         inputs: Inputs,
         target_dim: int = 0,
-        posterior_weight: float = 1.0,
+        posterior_weights: tuple[float, ...] | None = None,
+        scale: float = 1.0,
     ) -> Outputs:
-        """Generate a counterfactual sample for the given inputs and target class."""
+        """Generate a counterfactual sample for the given inputs and target class.
+
+        Args:
+            inputs: batch to intervene on.
+            target_dim: class the root prior is conditioned on.
+            posterior_weights: per-stage weight on the posterior offsets; defaults to
+                keeping the entire posterior at every stage.
+            scale: factor applied to every entry of ``posterior_weights``, so a caller
+                can sweep the prior/posterior trade-off without rebuilding the tuple.
+        """
         if not 0 <= target_dim < self.dim_target:
             raise ValueError(f'target_dim {target_dim} outside [0, {self.dim_target})')
 
+        if posterior_weights is None:
+            posterior_weights = self.full_posterior_weights
+
         x = inputs.image
-        condition = self.condition_from(inputs)
-        cf_condition = torch.zeros_like(condition)
+        cf_condition = torch.zeros(x.size(0), self.dim_target, device=x.device, dtype=x.dtype)
         cf_condition[:, target_dim] = 1.0
-        out = self.encode(x, condition=condition)
-        out = self.decode(out, condition=cf_condition, posterior_weight=posterior_weight)
+        out = self.encode(x)
+        out = self.decode(out, cf_condition, tuple(scale * weight for weight in posterior_weights))
         out.image = x
         out.condition = cf_condition
         return out
@@ -121,13 +139,13 @@ class Abstract_VAE(nn.Module, abc.ABC):
         if condition is None:
             condition = self.sample_condition(batch_size)
 
+        # No encoder output, so every stage falls back to its prior and the weights are
+        # inert; the root prior is what makes the sample class-controlled.
         out = Outputs()
         out.hidden = []
-        out.z = []
-        flat_z_dim = self.final_z_dim * ((self.final_res + 1) // 2) ** 2
-        sample = torch.randn(batch_size, flat_z_dim, device=next(self.parameters()).device)
-        sample = sample * self.sampling_variance[0]
-        return self.decode(out, condition=condition, sample=sample).recon
+        return self.decode(
+            out, condition.to(next(self.parameters()).device), self.full_posterior_weights
+        ).recon
 
     def sampling(self, mu: torch.Tensor, log_var: torch.Tensor, temperature: float = 1.0) -> torch.Tensor:
         clamped_logvar = soft_clamp(log_var, min_val=-10.0, max_val=10.0)
@@ -182,12 +200,13 @@ class BVAE(Abstract_VAE, abc.ABC):
     def final_res(self) -> int:
         return self.l_dims_encoder[-1]
 
+    @property
+    def flat_z_dim(self) -> int:
+        """Flat width of the root latent."""
+        return self.final_z_dim * ((self.final_res + 1) // 2) ** 2
+
     def _build_encoder_layers(self) -> None:
-        self.map_condition_encoder = nn.Sequential(
-            LinearLayer(self.dim_target, self.x_dim**2, act_cls=self.act_cls),
-            View(-1, 1, self.x_dim, self.x_dim),
-        )
-        self.initial_convolution = nn.Conv2d(self.n_channels + 1, self.h_dims[0], 1, bias=False)
+        self.initial_convolution = nn.Conv2d(self.n_channels, self.h_dims[0], 1, bias=False)
         self.encoding = nn.ModuleList([])
         for (h_in, h_out), k_dim, stride, padding, depth in zip(
             itertools.pairwise(self.h_dims), self.k_dims, self.strides, self.paddings, self.depths, strict=False
@@ -212,17 +231,19 @@ class BVAE(Abstract_VAE, abc.ABC):
         return
 
     def _build_decoder_layers(self) -> None:
-        self.map_condition_decoder = LinearLayer(
-            self.dim_target, ((self.final_res + 1) // 2) ** 2, act_cls=self.act_cls
-        )
+        # p(z_root | condition). Linear on a one-hot condition is a per-class lookup of
+        # (mean, log-variance); soft conditions interpolate between those entries.
+        # Truncated init starts every class at N(0, 1) so training warms up from the
+        # unconditional prior.
+        self.root_prior_net = LinearLayer(self.dim_target, 2 * self.flat_z_dim, use_trunc_init=True)
         self.h = nn.parameter.Parameter(torch.ones(1, self.h_dims[-1], self.final_res, self.final_res))
-        self.back_to_img = FromLatentConv(self.h_dims[-1], self.aux_dim, self.final_res)
+        self.back_to_img = FromLatentConv(self.h_dims[-1], self.final_z_dim, self.final_res)
         self.decode_list = nn.ModuleList([])
         self.inference_list = nn.ModuleList([])
         self.generate_list = nn.ModuleList([])
         self.from_latent_list = nn.ModuleList([])
         self.merge = nn.ModuleList([])
-        aux_dim = self.final_z_dim + (self.dim_target > 0)
+        aux_dim = self.final_z_dim
         for (h_in, h_out), k_dim, stride, padding, z_dim, res, depth in zip(
             itertools.pairwise(reversed(self.h_dims)),
             reversed(self.k_dims),
@@ -301,44 +322,44 @@ class BVAE(Abstract_VAE, abc.ABC):
     ) -> int:
         return (L_in - 1) * stride - 2 * padding + dilation * (kernel_size - 1) + output_padding + 1
 
-    @override
-    def encode(self, x: torch.Tensor, condition: torch.Tensor | None = None) -> Outputs:
-        if condition is None:
-            raise ValueError('condition must be provided for BVAE encoder')
+    def root_prior(self, condition: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        return self.root_prior_net(self._process_condition(condition)).chunk(2, dim=1)
 
-        condition = self._process_condition(condition, dtype=x.dtype)
-        cond_map = self.map_condition_encoder(condition)
-        x_cond = torch.cat([x, cond_map], dim=1)
+    @override
+    def encode(self, x: torch.Tensor) -> Outputs:
         out = Outputs()
-        x = self.initial_convolution(x_cond)
+        x = self.initial_convolution(x)
         for encode in self.encoding:
             out.hidden.append(x)
             x = encode(x)
 
-        mu, log_var = self.final_inference(x)
-        z = self.sampling(mu, log_var, temperature=self.sampling_variance[0])
-        out.mu.append(mu)
-        out.log_var.append(log_var)
-        out.z.append(z)
+        d_mu, d_logvar = self.final_inference(x)
+        out.d_mu.append(d_mu)
+        out.d_logvar.append(d_logvar)
         return out
 
     @override
     def decode(
         self,
         out: Outputs,
-        condition: torch.Tensor | None = None,
-        sample: torch.Tensor | None = None,
-        posterior_weight: float = 1.0,
+        condition: torch.Tensor,
+        posterior_weights: tuple[float, ...],
     ) -> Outputs:
-        if condition is None:
-            raise ValueError('condition must be provided for BVAE decoder')
-
-        condition = self._process_condition(condition)
-        cond_latent = self.map_condition_decoder(condition)
         out.prior_mu = []
         out.prior_log_var = []
-        z = out.z.pop() if sample is None else sample
-        z = torch.cat([z, cond_latent], dim=1)
+        p_mu, p_logvar = self.root_prior(condition)
+        posterior = bool(out.d_mu)
+        if posterior:
+            z = self.sampling(
+                posterior_weights[0] * out.d_mu[0] + p_mu,
+                out.d_logvar[0] + p_logvar,
+                temperature=self.sampling_variance[0],
+            )
+        else:
+            z = self.sampling(p_mu, p_logvar, temperature=self.sampling_variance[0])
+
+        out.prior_mu.append(p_mu)
+        out.prior_log_var.append(p_logvar)
         h = self.h.expand(z.size(0), -1, -1, -1)
         x = self.back_to_img(z, h)
         zipped = zip(
@@ -346,26 +367,29 @@ class BVAE(Abstract_VAE, abc.ABC):
         )
         for level, (decode, from_latent, generate, inference, merge) in enumerate(zipped, start=1):
             x = decode(x)
-            h = out.hidden.pop() if sample is None and out.hidden else None
+            h = out.hidden.pop() if posterior and out.hidden else None
             if h is not None:
                 out.hidden.insert(0, h)
 
             if not isinstance(from_latent, NullOp):
                 temperature = self.sampling_variance[level]
                 p_mu, p_logvar = generate(x, z)
-                if sample is None and h is not None:
+                if h is not None:
                     h = merge(torch.cat([x, h], dim=1))
-                    mu, log_var = inference(h)
-                    z = self.sampling(posterior_weight * mu + p_mu, log_var + p_logvar, temperature=temperature)
-                    out.mu.append(mu)
-                    out.log_var.append(log_var)
+                    d_mu, d_logvar = inference(h)
+                    z = self.sampling(
+                        posterior_weights[level] * d_mu + p_mu,
+                        posterior_weights[level] * d_logvar + p_logvar,
+                        temperature=temperature,
+                    )
+                    out.d_mu.append(d_mu)
+                    out.d_logvar.append(d_logvar)
                 else:
                     z = self.sampling(p_mu, p_logvar, temperature=temperature)
 
                 x = from_latent(z, x)
                 out.prior_mu.append(p_mu)
                 out.prior_log_var.append(p_logvar)
-                posterior_weight *= posterior_weight
 
         out.recon = torch.sigmoid(self.final_convolution(x))
         return out
@@ -438,10 +462,10 @@ class VAEX(BVAE):
 def get_autoencoder() -> Abstract_VAE:
     """Instantiate CVAE / VAEX model architecture based on autoencoder config selection."""
     cfg = Experiment.get_config()
-    cls_name = cfg.autoencoder.model.class_name
+    model_name = cfg.autoencoder.model.name
     _REGISTRY: dict[Models, type[Abstract_VAE]] = {
         Models.CVAE: CVAE,
         Models.VAEX: VAEX,
     }
-    cls = _REGISTRY.get(cls_name, VAEX)
+    cls = _REGISTRY.get(model_name, VAEX)
     return cls()

@@ -1,6 +1,6 @@
 defaults:
   - train: default_train
-  - model: vaex
+  - model: default_model
   - objective: default_objective
   - _self_
 

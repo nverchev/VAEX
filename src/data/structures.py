@@ -34,13 +34,12 @@ class Outputs:
     image: torch.Tensor = dataclasses.field(init=False)
     logits: torch.Tensor = dataclasses.field(init=False)
 
-    mu: list[torch.Tensor] = dataclasses.field(default_factory=list)
-    log_var: list[torch.Tensor] = dataclasses.field(default_factory=list)
+    d_mu: list[torch.Tensor] = dataclasses.field(default_factory=list)
+    d_logvar: list[torch.Tensor] = dataclasses.field(default_factory=list)
     prior_mu: list[torch.Tensor] = dataclasses.field(default_factory=list)
     prior_log_var: list[torch.Tensor] = dataclasses.field(default_factory=list)
     condition: torch.Tensor = dataclasses.field(init=False)
     hidden: list[torch.Tensor] = dataclasses.field(default_factory=list)
-    z: list[torch.Tensor] = dataclasses.field(default_factory=list)
     model_epoch: int = 0
 
     def update(self, other: Self) -> None:
