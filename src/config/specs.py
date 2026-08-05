@@ -227,7 +227,7 @@ class LearningConfig:
     learning_rate: PositiveFloat
     scheduler: SchedulerConfig
     grad_op: GradOp | None = None
-    clip_criterion: ClipCriterion | None = None
+    clip_criterion: ClipCriterion | None = ClipCriterion.EMA
     opt_settings: dict[str, Any] = dataclasses.field(default_factory=dict)
 
     def __post_init__(self) -> None:
