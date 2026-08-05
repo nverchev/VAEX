@@ -34,6 +34,7 @@ class Abstract_VAE(nn.Module, abc.ABC):
     x_dim: int
     aux_dim: int
     z_dims: tuple[int, ...]
+    sampling_variance: tuple[float, ...]
 
     def __init__(self) -> None:
         super().__init__()
@@ -42,6 +43,7 @@ class Abstract_VAE(nn.Module, abc.ABC):
         self.dim_target = len(exp_cfg.data.dataset.classes)
         self.x_dim = exp_cfg.autoencoder.model.architecture.x_dim
         self.z_dims = exp_cfg.autoencoder.model.z_dims
+        self.sampling_variance = exp_cfg.autoencoder.objective.sampling_variance
         self.aux_dim = self.final_z_dim + (self.dim_target > 0)
         return
 
@@ -103,12 +105,7 @@ class Abstract_VAE(nn.Module, abc.ABC):
         condition = self.condition_from(inputs)
         cf_condition = torch.zeros_like(condition)
         cf_condition[:, target_dim] = 1.0
-
-        # Condition both halves on the target class. Training only ever pairs an image
-        # with its own condition, and the root prior mean is a function of the
-        # condition, so encoding under the source class leaves the root latent
-        # asserting it while the decoder is told otherwise.
-        out = self.encode(x, condition=cf_condition)
+        out = self.encode(x, condition=condition)
         out = self.decode(out, condition=cf_condition, posterior_weight=posterior_weight)
         out.image = x
         out.condition = cf_condition
@@ -129,13 +126,8 @@ class Abstract_VAE(nn.Module, abc.ABC):
         out.z = []
         flat_z_dim = self.final_z_dim * ((self.final_res + 1) // 2) ** 2
         sample = torch.randn(batch_size, flat_z_dim, device=next(self.parameters()).device)
-        sample = sample * self.sampling_temperature(0)
+        sample = sample * self.sampling_variance[0]
         return self.decode(out, condition=condition, sample=sample).recon
-
-    def sampling_temperature(self, level: int) -> float:
-        """Eval-mode sampling temperature: 0 at the coarsest (top) latent, 1 at the finest (pixel-closest)."""
-        n_levels = len(self.z_dims)
-        return level / (n_levels - 1) if n_levels > 1 else 1.0
 
     def sampling(self, mu: torch.Tensor, log_var: torch.Tensor, temperature: float = 1.0) -> torch.Tensor:
         clamped_logvar = soft_clamp(log_var, min_val=-10.0, max_val=10.0)
@@ -324,7 +316,7 @@ class BVAE(Abstract_VAE, abc.ABC):
             x = encode(x)
 
         mu, log_var = self.final_inference(x)
-        z = self.sampling(mu, log_var, temperature=self.sampling_temperature(0))
+        z = self.sampling(mu, log_var, temperature=self.sampling_variance[0])
         out.mu.append(mu)
         out.log_var.append(log_var)
         out.z.append(z)
@@ -359,7 +351,7 @@ class BVAE(Abstract_VAE, abc.ABC):
                 out.hidden.insert(0, h)
 
             if not isinstance(from_latent, NullOp):
-                temperature = self.sampling_temperature(level)
+                temperature = self.sampling_variance[level]
                 p_mu, p_logvar = generate(x, z)
                 if sample is None and h is not None:
                     h = merge(torch.cat([x, h], dim=1))

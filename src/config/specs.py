@@ -115,14 +115,13 @@ class ObjectiveConfig:
             The corresponding variance is ``nll_sigma ** 2``.
         scale_prior: Prior scaling factor for latent conditioning.
         posterior_weight: Weight applied to the posterior mean during generation.
-        sampling_temperature: Temperature scaling for latent noise during generation.
-            1.0 uses full learned variance; lower values reduce diversity.
+        sampling_variance: Sampling variance per latent stage.
     """
 
     nll_sigma: float = 0.1
     scale_prior: float = 5.0
     posterior_weight: float = 1.0
-    sampling_temperature: float = 1.0
+    sampling_variance: tuple[float, ...] = (0.0, 0.2, 0.4, 0.6, 0.8, 1.0)
 
 
 @dataclass
@@ -305,6 +304,14 @@ class ExperimentConfig:
     model: ModelConfig
     train: TrainingConfig
     objective: ObjectiveConfig = dataclasses.field(default_factory=ObjectiveConfig)
+
+    @model_validator(mode='after')
+    def _check_sampling_variance_matches_z_dims(self) -> Self:
+        if len(self.objective.sampling_variance) != len(self.model.z_dims):
+            msg = 'sampling_variance (len {}) in objective must match z_dims (len {}) in model.'
+            raise ValueError(msg.format(len(self.objective.sampling_variance), len(self.model.z_dims)))
+
+        return self
 
 
 @dataclass
