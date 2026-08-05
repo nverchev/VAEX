@@ -105,7 +105,7 @@ class KLDLoss:
             zipped = zip(outputs.mu[1:], outputs.log_var[1:], outputs.prior_log_var, self.freebits[1:], strict=False)
             for d_mu, d_logvar, p_logvar, stage_freebits in zipped:
                 d_logvar = soft_clamp(d_logvar, min_val=-10.0, max_val=10.0)
-                p_logvar = soft_clamp(p_logvar, min_val=-5.0, max_val=10.0)
+                p_logvar = soft_clamp(p_logvar, min_val=-10.0, max_val=10.0)
                 stage_matrix = -1 - d_logvar + d_logvar.exp() + (d_mu**2) * torch.exp(-p_logvar)
                 stage_free_bits = self._free_bits(stage_matrix, stage_freebits)
                 kld = kld + 0.5 * stage_free_bits.mean(0).sum()
