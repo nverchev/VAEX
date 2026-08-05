@@ -115,11 +115,14 @@ class ObjectiveConfig:
             The corresponding variance is ``nll_sigma ** 2``.
         scale_prior: Prior scaling factor for latent conditioning.
         posterior_weight: Weight applied to the posterior mean during generation.
+        sampling_temperature: Temperature scaling for latent noise during generation.
+            1.0 uses full learned variance; lower values reduce diversity.
     """
 
     nll_sigma: float = 0.1
     scale_prior: float = 5.0
     posterior_weight: float = 1.0
+    sampling_temperature: float = 1.0
 
 
 @dataclass

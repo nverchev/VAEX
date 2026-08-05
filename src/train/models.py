@@ -62,11 +62,11 @@ def load_extract_classifier_module() -> BaseClassifier:
 
 
 __all__ = [
-    'ClassifierEMAModel',
     'ClassifierModel',
     'VAEEMAModel',
     'VAEModel',
     'load_extract_autoencoder_module',
     'load_extract_classifier_module',
 ]
+
 

@@ -54,6 +54,16 @@ class Weighted(Protocol):
     bias: torch.Tensor | None
 
 
+@runtime_checkable
+class ToLatentBlock(Protocol):
+    """Protocol for inference/generate modules projecting feature maps to latent parameters (mu, log_var)."""
+
+    def __call__(self, x: torch.Tensor, aux: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
+        """Project input x and optional aux condition to mu and log_var."""
+        ...
+
+
+
 class View(nn.Module):
     """A simple module that reshapes the input tensor according to the specified shape."""
 

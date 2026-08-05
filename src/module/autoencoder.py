@@ -3,13 +3,13 @@
 import abc
 import itertools
 
+from typing import override
+
 import torch
 import torch.nn as nn
 
-from typing import override
-
 from src.config.experiment import Experiment
-from src.config.options import Models, InferenceBlock
+from src.config.options import InferenceBlock, Models
 from src.data.structures import Inputs, Outputs
 from src.module.layers import (
     ConvBlock,
@@ -17,6 +17,7 @@ from src.module.layers import (
     LinearLayer,
     NullOp,
     ResBlock,
+    ToLatentBlock,
     ToLatentConvADAIN,
     ToLatentConvMobile,
     View,
@@ -24,36 +25,24 @@ from src.module.layers import (
     soft_clamp,
 )
 
+
 class Abstract_VAE(nn.Module, abc.ABC):
-    """Abstract base class for hierarchical VAE architectures."""
+    """Abstract base interface for hierarchical VAE architectures."""
 
     n_channels: int
     dim_target: int
     x_dim: int
-    h_dims: tuple[int, ...]
-    k_dims: tuple[int, ...]
-    strides: tuple[int, ...]
-    paddings: tuple[int, ...]
+    aux_dim: int
     z_dims: tuple[int, ...]
-    depths: tuple[int, ...]
-    l_dims_encoder: list[int]
-    l_dims_decoder: list[int]
-    flat_dim: int
 
     def __init__(self) -> None:
         super().__init__()
         exp_cfg = Experiment.get_config()
         self.n_channels = exp_cfg.data.n_channels
         self.dim_target = len(exp_cfg.data.dataset.classes)
-        vae_arch = exp_cfg.autoencoder.model.architecture
-        self.x_dim = vae_arch.x_dim
-        self.h_dims = vae_arch.h_dims
-        self.k_dims = vae_arch.k_dims
-        self.strides = vae_arch.strides
-        self.paddings = vae_arch.paddings
+        self.x_dim = exp_cfg.autoencoder.model.architecture.x_dim
         self.z_dims = exp_cfg.autoencoder.model.z_dims
-        self.depths = vae_arch.depths
-        self.l_dims_encoder, self.l_dims_decoder, self.flat_dim = self.size_calc()
+        self.aux_dim = self.final_z_dim + (self.dim_target > 0)
         return
 
     @property
@@ -67,14 +56,8 @@ class Abstract_VAE(nn.Module, abc.ABC):
         """Final spatial resolution."""
 
     @abc.abstractmethod
-    def generate_counterfactual(
-        self,
-        inputs: Inputs,
-        target_dim: int = 0,
-        target_value: float = 5.0,
-        posterior_weight: float | None = None,
-    ) -> Outputs:
-        """Generate counterfactual sample for given inputs and target dimension."""
+    def condition_from(self, inputs: Inputs) -> torch.Tensor:
+        """Derive the (batch, dim_target) conditioning vector for the given inputs."""
 
     @abc.abstractmethod
     def sample_condition(self, batch_size: int = 1) -> torch.Tensor:
@@ -93,6 +76,43 @@ class Abstract_VAE(nn.Module, abc.ABC):
         posterior_weight: float = 1.0,
     ) -> Outputs:
         """Decode latent space into reconstruction."""
+
+    def forward(self, inputs: Inputs, **kwargs) -> Outputs:
+        if not isinstance(inputs, Inputs):
+            raise TypeError(f'{self.__class__.__name__} requires Inputs dataclass')
+
+        x = inputs.image
+        condition = self.condition_from(inputs)
+        out = self.encode(x, condition=condition)
+        out = self.decode(out, condition=condition)
+        out.image = x
+        out.condition = condition
+        return out
+
+    def generate_counterfactual(
+        self,
+        inputs: Inputs,
+        target_dim: int = 0,
+        posterior_weight: float = 1.0,
+    ) -> Outputs:
+        """Generate a counterfactual sample for the given inputs and target class."""
+        if not 0 <= target_dim < self.dim_target:
+            raise ValueError(f'target_dim {target_dim} outside [0, {self.dim_target})')
+
+        x = inputs.image
+        condition = self.condition_from(inputs)
+        cf_condition = torch.zeros_like(condition)
+        cf_condition[:, target_dim] = 1.0
+
+        # Condition both halves on the target class. Training only ever pairs an image
+        # with its own condition, and the root prior mean is a function of the
+        # condition, so encoding under the source class leaves the root latent
+        # asserting it while the decoder is told otherwise.
+        out = self.encode(x, condition=cf_condition)
+        out = self.decode(out, condition=cf_condition, posterior_weight=posterior_weight)
+        out.image = x
+        out.condition = cf_condition
+        return out
 
     @torch.inference_mode()
     def generate_sample(
@@ -124,62 +144,49 @@ class Abstract_VAE(nn.Module, abc.ABC):
         z = eps.mul(std).add_(mu) if self.training else eps.mul(std * temperature).add_(mu)
         return z
 
-    def size_calc(self) -> tuple[list[int], list[int], int]:
-        l_dims = self.x_dim
-        l_dims_encoder = [l_dims]
-        for k_dim, stride, padding in zip(self.k_dims, self.strides, self.paddings, strict=False):
-            l_dims = self.conv_size_calc(L_in=l_dims, kernel_size=k_dim, stride=stride, padding=padding)
-            l_dims_encoder.append(l_dims)
 
-        flat_dim = self.h_dims[-1] * (l_dims_encoder[-1] ** 2)
-        l_dims_decoder = [l_dims]
-        for k_dim, stride, padding in reverse_zip(self.k_dims, self.strides, self.paddings):
-            l_dims = self.convt_size_calc(L_in=l_dims, kernel_size=k_dim, stride=stride, padding=padding)
-            l_dims_decoder.append(l_dims)
+class BVAE(Abstract_VAE, abc.ABC):
+    """Abstract base class for hierarchical VAE architectures handling network layers and dimension calculations."""
 
-        return l_dims_encoder, l_dims_decoder, flat_dim
-
-    @staticmethod
-    def conv_size_calc(L_in: int, kernel_size: int, stride: int = 1, dilation: int = 1, padding: int = 0) -> int:
-        return int((L_in + 2 * padding - dilation * (kernel_size - 1) - 1) // stride) + 1
-
-    @staticmethod
-    def convt_size_calc(
-        L_in: int,
-        kernel_size: int,
-        stride: int = 1,
-        padding: int = 0,
-        dilation: int = 1,
-        output_padding: int = 0,
-    ) -> int:
-        return (L_in - 1) * stride - 2 * padding + dilation * (kernel_size - 1) + output_padding + 1
-
-
-class CVAE(Abstract_VAE):
-    """Bottom-Up / Top-Down Hierarchical Variational Autoencoder."""
-
-    act_cls: type[nn.Module] | None
+    h_dims: tuple[int, ...]
+    k_dims: tuple[int, ...]
+    strides: tuple[int, ...]
+    paddings: tuple[int, ...]
     c_z_dims: list[int]
+    depths: tuple[int, ...]
+    l_dims_encoder: list[int]
+    l_dims_decoder: list[int]
     resolutions: list[int]
-    aux_dim: int
+    flat_dim: int
+    act_cls: type[nn.Module] | None
+    inference_block: InferenceBlock
+    final_inference: ToLatentBlock
 
     def __init__(self) -> None:
         super().__init__()
-        cfg = Experiment.get_config()
-        self.act_cls = cfg.autoencoder.model.architecture.act_cls
-        self.inference_block = cfg.autoencoder.model.architecture.inference_block
+        exp_cfg = Experiment.get_config()
+        vae_arch = exp_cfg.autoencoder.model.architecture
+        self.h_dims = vae_arch.h_dims
+        self.k_dims = vae_arch.k_dims
+        self.strides = vae_arch.strides
+        self.paddings = vae_arch.paddings
+        self.depths = vae_arch.depths
+        self.act_cls = vae_arch.act_cls
+        self.inference_block = vae_arch.inference_block
+        self.l_dims_encoder, self.l_dims_decoder, self.flat_dim = self.size_calc()
         *self.c_z_dims, _ = self.z_dims
         *self.resolutions, _ = self.l_dims_encoder
-        self.aux_dim = self.final_z_dim + (self.dim_target > 0)
         self._build_encoder_layers()
         self._build_decoder_layers()
         return
 
     @property
+    @override
     def final_z_dim(self) -> int:
         return self.z_dims[-1]
 
     @property
+    @override
     def final_res(self) -> int:
         return self.l_dims_encoder[-1]
 
@@ -209,6 +216,8 @@ class CVAE(Abstract_VAE):
             self.final_inference = ToLatentConvMobile(self.h_dims[-1], self.final_z_dim, self.final_res, 0)
         else:
             self.final_inference = ToLatentConvADAIN(self.h_dims[-1], self.final_z_dim, self.final_res, 0)
+
+        return
 
     def _build_decoder_layers(self) -> None:
         self.map_condition_decoder = LinearLayer(
@@ -245,12 +254,15 @@ class CVAE(Abstract_VAE):
             self.decode_list.append(decode)
             if z_dim:
                 from_latent = FromLatentConv(h_out, z_dim, res)
+                generate: ToLatentBlock
+                inference: ToLatentBlock
                 if self.inference_block == InferenceBlock.Mobile:
                     generate = ToLatentConvMobile(h_out, z_dim, res, aux_dim)
                     inference = ToLatentConvMobile(h_out, z_dim, res)
                 else:
                     generate = ToLatentConvADAIN(h_out, z_dim, res, aux_dim)
                     inference = ToLatentConvADAIN(h_out, z_dim, res)
+
                 merge = ConvBlock(2 * h_out, h_out)
                 self.inference_list.append(inference)
                 self.generate_list.append(generate)
@@ -267,26 +279,40 @@ class CVAE(Abstract_VAE):
         self.final_convolution = ConvBlock(self.h_dims[0], self.n_channels, use_trunc_init=True)
         return
 
-    def _process_condition(self, condition: torch.Tensor, dtype: torch.dtype | None = None) -> torch.Tensor:
-        if condition.dim() == 1:
-            if condition.is_floating_point():
-                condition = condition.unsqueeze(1)
-            else:
-                condition = nn.functional.one_hot(condition.long(), num_classes=self.dim_target)
+    def size_calc(self) -> tuple[list[int], list[int], int]:
+        l_dims = self.x_dim
+        l_dims_encoder = [l_dims]
+        for k_dim, stride, padding in zip(self.k_dims, self.strides, self.paddings, strict=False):
+            l_dims = self.conv_size_calc(L_in=l_dims, kernel_size=k_dim, stride=stride, padding=padding)
+            l_dims_encoder.append(l_dims)
 
-        if condition.size(1) == 1 and self.dim_target == 2:
-            condition = torch.cat([1 - condition, condition], dim=1)
+        flat_dim = self.h_dims[-1] * (l_dims_encoder[-1] ** 2)
+        l_dims_decoder = [l_dims]
+        for k_dim, stride, padding in reverse_zip(self.k_dims, self.strides, self.paddings):
+            l_dims = self.convt_size_calc(L_in=l_dims, kernel_size=k_dim, stride=stride, padding=padding)
+            l_dims_decoder.append(l_dims)
 
-        if dtype is not None:
-            condition = condition.to(dtype=dtype)
-        else:
-            condition = condition.float()
+        return l_dims_encoder, l_dims_decoder, flat_dim
 
-        return condition
+    @staticmethod
+    def conv_size_calc(L_in: int, kernel_size: int, stride: int = 1, dilation: int = 1, padding: int = 0) -> int:
+        return int((L_in + 2 * padding - dilation * (kernel_size - 1) - 1) // stride) + 1
 
+    @staticmethod
+    def convt_size_calc(
+        L_in: int,
+        kernel_size: int,
+        stride: int = 1,
+        padding: int = 0,
+        dilation: int = 1,
+        output_padding: int = 0,
+    ) -> int:
+        return (L_in - 1) * stride - 2 * padding + dilation * (kernel_size - 1) + output_padding + 1
+
+    @override
     def encode(self, x: torch.Tensor, condition: torch.Tensor | None = None) -> Outputs:
         if condition is None:
-            raise ValueError('condition must be provided for CVAE encoder')
+            raise ValueError('condition must be provided for BVAE encoder')
 
         condition = self._process_condition(condition, dtype=x.dtype)
         cond_map = self.map_condition_encoder(condition)
@@ -304,6 +330,7 @@ class CVAE(Abstract_VAE):
         out.z.append(z)
         return out
 
+    @override
     def decode(
         self,
         out: Outputs,
@@ -312,7 +339,7 @@ class CVAE(Abstract_VAE):
         posterior_weight: float = 1.0,
     ) -> Outputs:
         if condition is None:
-            raise ValueError('condition must be provided for CVAE decoder')
+            raise ValueError('condition must be provided for BVAE decoder')
 
         condition = self._process_condition(condition)
         cond_latent = self.map_condition_decoder(condition)
@@ -351,20 +378,35 @@ class CVAE(Abstract_VAE):
         out.recon = torch.sigmoid(self.final_convolution(x))
         return out
 
-    def forward(self, inputs: Inputs, **kwargs) -> Outputs:
-        if not isinstance(inputs, Inputs):
-            raise TypeError('CVAE requires Inputs dataclass with label')
+    def _process_condition(self, condition: torch.Tensor, dtype: torch.dtype | None = None) -> torch.Tensor:
+        if condition.dim() == 1:
+            if condition.is_floating_point():
+                condition = condition.unsqueeze(1)
+            else:
+                condition = nn.functional.one_hot(condition.long(), num_classes=self.dim_target)
 
-        x = inputs.image
+        if condition.size(1) == 1 and self.dim_target == 2:
+            condition = torch.cat([1 - condition, condition], dim=1)
+
+        if dtype is not None:
+            condition = condition.to(dtype=dtype)
+        else:
+            condition = condition.float()
+
+        return condition
+
+
+class CVAE(BVAE):
+    """Bottom-Up / Top-Down Hierarchical Conditional Variational Autoencoder."""
+
+    @override
+    def condition_from(self, inputs: Inputs) -> torch.Tensor:
+        """Use the explicit label condition carried by the inputs."""
         condition = inputs.condition
-        if condition is None or condition.numel() == 0:
+        if condition.numel() == 0:
             raise ValueError('label MUST be in Inputs else fail')
 
-        out = self.encode(x, condition=condition)
-        out = self.decode(out, condition=condition)
-        out.image = x
-        out.condition = self._process_condition(condition, dtype=x.dtype)
-        return out
+        return self._process_condition(condition, dtype=inputs.image.dtype)
 
     @override
     def sample_condition(self, batch_size: int = 1) -> torch.Tensor:
@@ -373,40 +415,9 @@ class CVAE(Abstract_VAE):
         random_classes = torch.randint(0, self.dim_target, (batch_size,), device=device)
         return nn.functional.one_hot(random_classes, num_classes=self.dim_target).float()
 
-    def generate_counterfactual(
-        self,
-        inputs: Inputs,
-        target_dim: int = 0,
-        target_value: float = 1.0,
-        posterior_weight: float | None = None,
-    ) -> Outputs:
-        if posterior_weight is None:
-            posterior_weight = Experiment.get_config().autoencoder.objective.posterior_weight
 
-        if inputs.condition is None or inputs.condition.numel() == 0:
-            raise ValueError('label MUST be in Inputs else fail')
-
-        x = inputs.image
-        condition = inputs.condition
-
-        condition = self._process_condition(condition, dtype=x.dtype)
-        out = self.encode(x, condition=condition)
-
-        # Interpolate the condition towards the target class (one-hot vector)
-        target = torch.zeros_like(condition)
-        target[:, target_dim] = 1.0
-        cf_condition = (1.0 - target_value) * condition + target_value * target
-
-        out = self.decode(out, condition=cf_condition, posterior_weight=posterior_weight)
-        out.image = x
-        out.condition = cf_condition
-        return out
-
-
-class VAEX(CVAE):
-    """Conditional VAE with input attribute map (fc0) and top latent attribute map (fc1).
-    Conditions on the classifier logits using temperature scaling.
-    """
+class VAEX(BVAE):
+    """Hierarchical VAE conditioned on the predictions of an external classifier."""
 
     temperature: float
 
@@ -417,35 +428,12 @@ class VAEX(CVAE):
         return
 
     @override
-    def forward(self, inputs: Inputs, **kwargs) -> Outputs:
-        if not isinstance(inputs, Inputs):
-            raise TypeError('VAEX requires Inputs dataclass with logits')
-
-        if inputs.logits is None or inputs.logits.numel() == 0:
+    def condition_from(self, inputs: Inputs) -> torch.Tensor:
+        """Map classifier logits to a shift-invariant conditioning vector."""
+        if inputs.logits.numel() == 0:
             raise ValueError('logits MUST be in Inputs else fail')
 
-        # Scale logits by temperature and convert to probability distribution
-        condition = torch.sigmoid(inputs.logits / self.temperature)
-        inputs = inputs._replace(condition=condition)
-        return super().forward(inputs, **kwargs)
-
-    @override
-    def generate_counterfactual(
-        self,
-        inputs: Inputs,
-        target_dim: int = 0,
-        target_value: float = 1.0,
-        posterior_weight: float | None = None,
-    ) -> Outputs:
-        if inputs.logits is None or inputs.logits.numel() == 0:
-            raise ValueError('logits MUST be in Inputs else fail')
-
-        condition = torch.sigmoid(inputs.logits / self.temperature)
-        inputs = inputs._replace(condition=condition)
-
-        return super().generate_counterfactual(
-            inputs, target_dim=target_dim, target_value=target_value, posterior_weight=posterior_weight
-        )
+        return torch.softmax(inputs.logits / self.temperature, dim=1)
 
     @override
     def sample_condition(self, batch_size: int = 1) -> torch.Tensor:

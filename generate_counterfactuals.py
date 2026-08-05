@@ -29,7 +29,6 @@ def to_numpy_img(tensor: torch.Tensor) -> np.ndarray:
 def create_and_render_counterfactuals() -> None:
     cfg = Experiment.get_config()
     cfg_user = cfg.user
-    scale_prior = cfg.autoencoder.objective.scale_prior
     save_dir_base = cfg_user.path.version_dir / 'images' / cfg.name
     save_dir_base.mkdir(parents=True, exist_ok=True)
     classifier_module = get_classifier().eval()
@@ -49,8 +48,8 @@ def create_and_render_counterfactuals() -> None:
     for sample_idx in sample_indices:
         inputs_item, target_item = test_dataset[sample_idx]
         img_tensor = inputs_item.image.unsqueeze(0).to(classifier.device)
-        target_label = int(target_item.label.item())
-        inputs = Inputs(image=img_tensor, condition=target_item.label.unsqueeze(0).to(classifier.device).float())
+        img_class = target_item.label.unsqueeze(0).to(classifier.device)
+        inputs = Inputs(image=img_tensor, condition=img_class)
         logits_orig = classifier(inputs)
         probs_orig = torch.softmax(logits_orig, dim=1).cpu().numpy()[0]
         inputs = inputs._replace(logits=logits_orig)
@@ -59,17 +58,16 @@ def create_and_render_counterfactuals() -> None:
         logits_recon = classifier(Inputs(image=recon_img))
         probs_recon = torch.softmax(logits_recon, dim=1).cpu().numpy()[0]
         n_delta = cfg_user.plot.n_delta
-        cf_grids = []
+        weights = [step / float(n_delta) for step in range(n_delta, -1, -1)]
+        cf_grids: list[tuple[list[np.ndarray], list[np.ndarray]]] = []
         for target_cls in range(len(class_names)):
-            row_imgs = []
-            row_probs = []
-            for step in range(n_delta, -1, -1):
-                scale_s = step / float(n_delta)
+            row_imgs: list[np.ndarray] = []
+            row_probs: list[np.ndarray] = []
+            for posterior_weight in weights:
                 out_cf = ema_module.generate_counterfactual(
                     inputs,
                     target_dim=target_cls,
-                    target_value=scale_prior,
-                    posterior_weight=scale_s,
+                    posterior_weight=posterior_weight,
                 )
                 cf_img = out_cf.recon if out_cf.recon is not None else img_tensor
                 l_cf = classifier(Inputs(image=cf_img))
@@ -83,11 +81,11 @@ def create_and_render_counterfactuals() -> None:
 
         # Top row: Original & Reconstruction
         axes[0, 0].imshow(to_numpy_img(img_tensor[0]))
-        axes[0, 0].set_title(f'Original ({class_names[target_label]}: {probs_orig[target_label]:.2f})')
+        axes[0, 0].set_title(f'Original ({class_names[int(img_class.item())]}: {probs_orig[img_class.item()]:.2f})')
         axes[0, 0].axis('off')
 
         axes[0, 1].imshow(to_numpy_img(recon_img[0]))
-        axes[0, 1].set_title(f'Recon ({class_names[target_label]}: {probs_recon[target_label]:.2f})')
+        axes[0, 1].set_title(f'Recon ({probs_recon[img_class.item()]:.2f})')
         axes[0, 1].axis('off')
 
         for c in range(2, n_delta + 1):
@@ -98,7 +96,7 @@ def create_and_render_counterfactuals() -> None:
                 ax = axes[r + 1, c]
                 ax.imshow(img)
                 target_prob = probs[r]
-                ax.set_title(f'{class_names[r]}: {target_prob:.2f}')
+                ax.set_title(f'{class_names[r]}: {target_prob:.2f} (w={weights[c]:.2f})')
                 ax.axis('off')
 
         plt.tight_layout()

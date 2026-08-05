@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m ruff check --select E3,W2,W3,D --preview src/module/autoencoder.py)",
+      "Bash(python -m ruff check src/module/autoencoder.py)"
+    ]
+  }
+}
