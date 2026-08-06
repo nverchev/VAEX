@@ -38,47 +38,20 @@ class VAEEMAModel(LogEpochMixin, EMAModel[Inputs, Outputs]):
 
 
 class GenerativeVAEModel(VAEModel):
-    """VAE model that decodes with the configured share of the posterior.
+    """VAE model that decodes with the decaying posterior weights of its module.
 
     ``Abstract_VAE.forward`` always keeps the whole posterior, which is what training
     needs. Generation and counterfactuals instead decode with ``posterior_weights``, and
     running that path through the model rather than through the caller lets any drytorch
     runner drive it.
-
-    Attributes:
-        posterior_weights: per-stage weight on the posterior offsets.
     """
 
-    posterior_weights: tuple[float, ...]
-
-    def __init__(
-        self,
-        module: Abstract_VAE,
-        name: str = '',
-        device: torch.device | None = None,
-        *,
-        posterior_weights: tuple[float, ...],
-        **kwargs,
-    ) -> None:
-        """Initialize.
-
-        Args:
-            module: the autoencoder to wrap.
-            name: the name of the model.
-            device: the device where to store the weights.
-            posterior_weights: per-stage weight on the posterior offsets.
-            kwargs: forwarded to the base model.
-        """
-        super().__init__(module, name, device, **kwargs)
-        self.posterior_weights = posterior_weights
-        return
-
     def __call__(self, inputs: Inputs) -> Outputs:
-        """Encode, then decode with the configured posterior weights."""
+        """Encode, then decode with the generative posterior weights."""
         module = cast(Abstract_VAE, self.module)
         with torch.autocast(device_type=self.device.type, enabled=self.mixed_precision):
             condition = module.condition_from(inputs)
-            out = module.decode(module.encode(inputs.image), condition, self.posterior_weights)
+            out = module.decode(module.encode(inputs.image), condition, module.posterior_weights)
 
         out.image = inputs.image
         out.condition = condition
@@ -117,7 +90,6 @@ def clone_for_generation(model: VAEEMAModel) -> GenerativeVAEModel:
         get_autoencoder().eval(),
         name=f'{cfg.autoencoder.name}{GENERATIVE_SUFFIX}',
         device=model.device,
-        posterior_weights=cfg.autoencoder.objective.posterior_weights,
         should_compile=False,
         should_distribute=False,
     )

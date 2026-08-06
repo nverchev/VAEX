@@ -111,10 +111,16 @@ class ObjectiveConfig:
     Attributes:
         nll_sigma: Standard deviation (sigma) of the Gaussian NLL reconstruction loss.
             The corresponding variance is ``nll_sigma ** 2``.
-        posterior_weights: Per-stage weight on the posterior mean and log-variance
-            offsets, one entry per latent stage. ``1.0`` keeps the stage posterior,
-            ``0.0`` falls back to the stage prior. Passed to the model as an argument;
-            entry points read it from here rather than the model holding it.
+        posterior_weight_multiplier: Ratio between the posterior weights of consecutive
+            latent stages, growing towards the pixels: the finest stage keeps its whole
+            posterior and each stage above it keeps ``multiplier`` times the weight of
+            the one below. An intervention acts where the weight is low, so this leaves
+            the root freest for the condition to rewrite and copies texture from the
+            source. ``1.0`` keeps the whole posterior everywhere.
+        cf_temperature: Sharpness of the condition a counterfactual is decoded with,
+            relative to the uniform condition. ``1.0`` is the plain one-hot target class;
+            below ``1.0`` pushes past it, amplifying the shift the root prior applies;
+            above ``1.0`` softens it back towards uniform.
         sampling_temperature: Temperature scaling for latent noise during generation.
             1.0 uses full learned variance; lower values reduce diversity.
         sampling_variance: Per-stage multiplier on the sampling standard deviation,
@@ -122,13 +128,14 @@ class ObjectiveConfig:
             with the full learned scale. Note this scales sigma, so the variance moves
             with its square.
         recalibrate_bn: Whether to re-estimate the BatchNorm running statistics on the
-            path given by ``posterior_weights`` once training is over, and save the result
-            one epoch past the trained weights. The trained checkpoint is left untouched,
-            so both stay loadable.
+            decoding path the posterior weights define, once training is over, and save
+            the result as a separate model. The trained checkpoint is left untouched, so
+            both stay loadable.
     """
 
     nll_sigma: float = 0.1
-    posterior_weights: tuple[float, ...] = (1.0, 1.0, 1.0, 1.0, 1.0, 1.0)
+    posterior_weight_multiplier: float = 0.5
+    cf_temperature: float = 1.0
     sampling_temperature: float = 1.0
     sampling_variance: tuple[float, ...] = (0.0, 0.2, 0.4, 0.6, 0.8, 1.0)
     recalibrate_bn: bool = True
@@ -348,10 +355,6 @@ class AutoencoderExperimentConfig(BaseExperimentConfig):
         if len(self.objective.sampling_variance) != len(self.model.z_dims):
             msg = 'sampling_variance (len {}) in objective must match z_dims (len {}) in model.'
             raise ValueError(msg.format(len(self.objective.sampling_variance), len(self.model.z_dims)))
-
-        if len(self.objective.posterior_weights) != len(self.model.z_dims):
-            msg = 'posterior_weights (len {}) in objective must match z_dims (len {}) in model.'
-            raise ValueError(msg.format(len(self.objective.posterior_weights), len(self.model.z_dims)))
 
         return self
 

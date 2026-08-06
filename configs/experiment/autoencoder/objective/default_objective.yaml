@@ -1,5 +1,6 @@
-posterior_weights: [1, .8, .6, .4, .2, .1]
+posterior_weight_multiplier: 0.5
 nll_sigma: 0.1
-sampling_variance: [1, .8, .6, .4, .2, .1]
+
+sampling_variance: [.0, .05, .1, .2, .4, .8]
 recalibrate_bn: true
 

@@ -37,6 +37,8 @@ class Abstract_VAE(nn.Module, abc.ABC):
     x_dim: int
     z_dims: tuple[int, ...]
     sampling_variance: tuple[float, ...]
+    posterior_weight_multiplier: float
+    cf_temperature: float
 
     def __init__(self) -> None:
         super().__init__()
@@ -46,12 +48,36 @@ class Abstract_VAE(nn.Module, abc.ABC):
         self.x_dim = exp_cfg.data.x_dim
         self.z_dims = exp_cfg.autoencoder.model.z_dims
         self.sampling_variance = exp_cfg.autoencoder.objective.sampling_variance
+        self.posterior_weight_multiplier = exp_cfg.autoencoder.objective.posterior_weight_multiplier
+        self.cf_temperature = exp_cfg.autoencoder.objective.cf_temperature
         return
 
     @property
     def full_posterior_weights(self) -> tuple[float, ...]:
         """Per-stage weights that keep the entire posterior, as used for reconstruction."""
         return (1.0,) * len(self.z_dims)
+
+    @property
+    def posterior_weights(self) -> tuple[float, ...]:
+        """Per-stage weights decaying geometrically, as configured for generation."""
+        return self.posterior_weights_from(self.posterior_weight_multiplier)
+
+    def posterior_weights_from(self, multiplier: float) -> tuple[float, ...]:
+        """Build per-stage posterior weights growing geometrically towards the pixels.
+
+        An intervention acts where the weight is low, since that is where the stage
+        prior, and through it the condition, takes over from the posterior. The finest
+        stage therefore keeps its whole posterior, so that pixel-level detail is copied
+        from the source, and each stage above it keeps `multiplier` times the weight of
+        the one below. The root is left with the least, which is what lets the condition
+        rewrite the semantics rather than the texture. ``1.0`` keeps the whole posterior
+        everywhere and ``0.0`` keeps it at the finest stage alone.
+
+        Args:
+            multiplier: ratio between the weights of consecutive stages.
+        """
+        last = len(self.z_dims) - 1
+        return tuple(multiplier ** (last - level) for level in range(len(self.z_dims)))
 
     @property
     @abc.abstractmethod
@@ -106,29 +132,32 @@ class Abstract_VAE(nn.Module, abc.ABC):
         inputs: Inputs,
         target_dim: int = 0,
         posterior_weights: tuple[float, ...] | None = None,
-        scale: float = 1.0,
     ) -> Outputs:
         """Generate a counterfactual sample for the given inputs and target class.
 
         Args:
             inputs: batch to intervene on.
             target_dim: class the root prior is conditioned on.
-            posterior_weights: per-stage weight on the posterior offsets; defaults to
-                keeping the entire posterior at every stage.
-            scale: factor applied to every entry of ``posterior_weights``, so a caller
-                can sweep the prior/posterior trade-off without rebuilding the tuple.
+            posterior_weights: per-stage weight on the posterior offsets; defaults to the
+                decaying weights configured for generation.
         """
         if not 0 <= target_dim < self.dim_target:
             raise ValueError(f'target_dim {target_dim} outside [0, {self.dim_target})')
 
         if posterior_weights is None:
-            posterior_weights = self.full_posterior_weights
+            posterior_weights = self.posterior_weights
 
         x = inputs.image
-        cf_condition = torch.zeros(x.size(0), self.dim_target, device=x.device, dtype=x.dtype)
-        cf_condition[:, target_dim] = 1.0
+        # Read out from the uniform condition towards the target class. The root prior is
+        # linear in the condition, so a temperature below one carries it past the one-hot
+        # and scales up the shift the intervention applies.
+        uniform = 1.0 / self.dim_target
+        cf_condition = torch.full(
+            (x.size(0), self.dim_target), uniform - uniform / self.cf_temperature, device=x.device, dtype=x.dtype
+        )
+        cf_condition[:, target_dim] = uniform + (1.0 - uniform) / self.cf_temperature
         out = self.encode(x)
-        out = self.decode(out, cf_condition, tuple(scale * weight for weight in posterior_weights))
+        out = self.decode(out, cf_condition, posterior_weights)
         out.image = x
         out.condition = cf_condition
         return out
