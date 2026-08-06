@@ -1,9 +1,8 @@
 # VAEX
 
-Implementation of [**Hierarchical Variational Autoencoders for Visual Counterfactuals**](https://arxiv.org/abs/2104.14869).
+Implementation of [**Hierarchical Variational Autoencoders for Visual Counterfactuals**](https://ieeexplore.ieee.org/document/9506692), ICIP 2021.
 
 This project provides a modular, type-safe implementation of VAEX using the [drytorch](https://github.com/nverchev/drytorch) engine for ML experimentation.
-
 ---
 
 ## Overview
@@ -11,56 +10,41 @@ This project provides a modular, type-safe implementation of VAEX using the [dry
 Visual counterfactual explanations answer the question: *"How would this image change if its attribute classification were different?"*
 
 This repository implements the **VAEX** model framework:
-- **Hierarchical Bottom-Up / Top-Down VAE (`BVAE`)**: A multi-scale VAE featuring resolution-aware residual layers, adaptive instance normalization (ADAIN), and free-bits Gaussian KL divergence.
-- **Conditional Attribute Manipulation (`VAEX`)**: Explicit conditioning on input attribute maps ($fc_0$) and top-latent attribute maps ($fc_1$), enabling controllable generation across scaling values $s \in [0, 1]$.
-- **Decoupled Loss Objectives**: Gaussian Negative Log-Likelihood with running per-pixel variance tracking (`train_var`), free-bits KLD, and prior conditioning.
-- **Visual Counterfactual Generation**: Automated generation and rendering of counterfactual image grids across target classes (e.g. `Female` vs `Male`) and scaling steps.
-- **Anomaly Detection**: Evaluation of VAE reconstruction loss on classifier misclassifications versus correctly classified samples.
+
+- **Hierarchical Bottom-Up / Top-Down VAE (`BVAE`)** — a multi-scale VAE featuring resolution-aware residual layers, adaptive instance normalization (ADAIN), and free-bits Gaussian KL divergence.
+- **Conditional Attribute Manipulation (`VAEX`)** — explicit conditioning on input attribute maps ($fc_0$) and top-latent attribute maps ($fc_1$), enabling controllable generation across scaling values $s \in [0, 1]$.
+- **Decoupled Loss Objectives** — Gaussian Negative Log-Likelihood with running per-pixel variance tracking (`train_var`), free-bits KLD, and prior conditioning.
+- **Visual Counterfactual Generation** — automated generation and rendering of counterfactual image grids across target classes (e.g., `Female` vs `Male`) and scaling steps.
+- **Anomaly Detection** — evaluation of VAE reconstruction loss on classifier misclassifications versus correctly classified samples.
 
 ---
 
-## CelebA Dataset Setup
+## Dataset — CelebA
 
-### Environment Configuration
+The CelebA dataset contains over 200,000 celebrity images, each with 40 attribute annotations.
 
-Set your root dataset directory `DATASET_DIR` in `.env`:
+### Download
 
-```ini
-DATASET_DIR=/path/to/your/datasets
-ROOT_EXP_DIR=./experiments
-METADATA_DIR=./dataset_metadata
-```
+The dataset directory is expected at `<DATASET_DIR>/celeba_torchvision/`. The project will automatically attempt to download the dataset via `torchvision.datasets.CelebA`.
 
-The dataset directory is expected at `<DATASET_DIR>/celeba_torchvision/`. If it does not exist, the project
-automatically creates it and attempts to download the dataset via `torchvision.datasets.CelebA(download=True)`.
-
-### Expected Directory Layout
-
-```
-<DATASET_DIR>/celeba_torchvision/
-├── img_align_celeba/       # CelebA aligned facial images (000001.jpg, ...)
-└── list_attr_celeba.txt    # Facial attribute labels
-```
-
-### Manual Download
-
-The automatic download uses Google Drive, which may fail with a quota error:
-
-```
-Too many users have viewed or downloaded this file recently.
-```
-
-In that case, download the following files directly from Google Drive and place them as shown:
+If the automatic Google Drive download fails due to a quota error, download the files manually:
 
 | File | Google Drive link | Destination |
 |------|-------------------|-------------|
 | `img_align_celeba.zip` | [download](https://drive.google.com/uc?id=0B7EVK8r0v71pZjFTYXZWM3FlRnM) | extract to `<DATASET_DIR>/celeba_torchvision/img_align_celeba/` |
 | `list_attr_celeba.txt` | [download](https://drive.google.com/uc?id=0B7EVK8r0v71pblRyaVFSWGxPY0U) | place at `<DATASET_DIR>/celeba_torchvision/list_attr_celeba.txt` |
 
-### CLI Overrides
+### Configure the data path
 
-Pass `data.dataset.data_dir` CLI overrides to customize the dataset path for specific runs:
+Set the environment variable `DATASET_DIR` in a `.env` file at the project root:
 
+```dotenv
+DATASET_DIR=/path/to/your/datasets
+ROOT_EXP_DIR=./experiments
+METADATA_DIR=./dataset_metadata
+```
+
+Alternatively, pass `data.dataset.data_dir` CLI overrides to customize the dataset path for specific runs:
 ```bash
 uv run train_vae.py data.dataset.data_dir=/path/to/custom/dataset
 ```
@@ -75,103 +59,92 @@ The project requires **Python 3.13** and uses [uv](https://github.com/astral-sh/
 # Install core dependencies
 uv sync
 
-# Optional extras for tracking and tuning
+# Optional extras
 uv sync --extra track_all   # TensorBoard, W&B, SQLAlchemy
 uv sync --extra finetune    # Optuna hyperparameter tuning
 ```
 
 ---
 
-## Usage Commands
+## Usage
 
-### 1. Classifier Training & Tuning
+### Training
 
-Train the 5-stage convolutional CelebA attribute classifier:
+- **Train the CelebA attribute classifier:**
+  ```bash
+  uv run train_classifier.py
+  ```
 
-```bash
-uv run train_classifier.py
+- **Train the Hierarchical VAEX model:**
+  ```bash
+  uv run train_vae.py
+  ```
+
+*Note: Hyperparameter tuning entry points are available via `tune_classifier.py` and `tune_vae.py`.*
+
+### Visualisation and Evaluation
+
+- **Generate visual counterfactuals for test samples:**
+  ```bash
+  uv run generate_counterfactuals.py
+  ```
+
+- **Reconstruct dataset samples:**
+  ```bash
+  uv run reconstruct_samples.py
+  ```
+
+- **Evaluate quantitative metrics and anomaly detection:**
+  ```bash
+  uv run evaluate_counterfactuals.py
+  ```
+
+- **Generate random samples:**
+  ```bash
+  uv run generate_random_samples.py
+  ```
+
+- **Inspect dataset statistics and model parameters:**
+  ```bash
+  uv run explore_dataset.py
+  uv run profile_model.py
+  ```
+
+---
+
+## Project structure
+
 ```
-
-Hyperparameter tuning with Optuna:
-
-```bash
-uv run tune_classifier.py
-```
-
-### 2. VAE / VAEX Model Training & Tuning
-
-Train the Hierarchical VAEX model:
-
-```bash
-uv run train_vae.py
-```
-
-Hyperparameter tuning for VAE architecture:
-
-```bash
-uv run tune_vae.py
-```
-
-### 3. Sample Reconstruction & Visualization
-
-Reconstruct selected dataset samples using the VAE / VAEX model:
-
-```bash
-uv run reconstruct_samples.py
-```
-
-### 4. Visual Counterfactual Generation
-
-Generate visual counterfactual image grids for test samples:
-
-```bash
-uv run generate_counterfactuals.py
-```
-
-Generated image panels are saved under `outputs/v0.1.0/images/`.
-
-### 5. Quantitative Evaluation & Anomaly Detection
-
-Evaluate classifier accuracy, counterfactual metrics, and VAE reconstruction loss on misclassifications:
-
-```bash
-uv run evaluate_counterfactuals.py
-```
-
-### 6. Dataset & Model Inspection
-
-Inspect dataset statistics and attributes:
-
-```bash
-uv run explore_dataset.py
-```
-
-Profile model parameters and FLOPs:
-
-```bash
-uv run profile_model.py
+VAEX/
+├── configs/                      # Hydra YAML configuration hierarchy
+│   ├── experiment/               # Subexperiments (classification, autoencoder, data, user)
+│   └── tuning/                   # Optuna search space definitions
+├── reference/                    # Original reference implementation (VAEX.ipynb)
+├── src/
+│   ├── config/                   # Pydantic specs, options, and drytorch experiment wiring
+│   ├── data/                     # CelebA dataset loading, structures
+│   ├── module/                   # Architectures (CelebaClassifier, BVAE, VAEX) and VAE layers
+│   ├── train/                    # Decoupled loss functions, metrics, learning schemas
+│   └── utils/                    # Utilities
+├── train_classifier.py           # Classifier training entrypoint
+├── train_vae.py                  # VAE / VAEX training entrypoint
+├── reconstruct_samples.py        # Sample reconstruction entrypoint
+├── generate_counterfactuals.py   # Visual counterfactual grid generator
+├── evaluate_counterfactuals.py   # Quantitative evaluation & anomaly detection
+└── pyproject.toml
 ```
 
 ---
 
-## Architecture & Project Structure
+## Citation
 
-```
-VAEX/
-├── configs/                # Hydra YAML configuration hierarchy
-│   ├── experiment/         # Subexperiments (classification, autoencoder, data, user)
-│   └── tuning/             # Optuna search space definitions
-├── reference/              # Original reference implementation (VAEX.ipynb)
-├── src/
-│   ├── config/             # Pydantic specs, options, and drytorch experiment wiring
-│   ├── data/               # CelebA dataset loading, structures (Inputs, Outputs, Targets)
-│   ├── module/             # Architectures (CelebaClassifier, BVAE, VAEX) and VAE layers
-│   ├── train/              # Decoupled loss functions, metrics, learning schemas, and model wrappers
-│   └── utils/              # Parallel worker spawning and profiling utilities
-├── train_classifier.py     # Classifier training entrypoint
-├── train_vae.py            # VAE / VAEX training entrypoint
-├── reconstruct_samples.py  # Sample reconstruction entrypoint
-├── generate_counterfactuals.py # Visual counterfactual grid generator
-├── evaluate_counterfactuals.py # Quantitative evaluation & anomaly detection
-└── explore_dataset.py      # Dataset inspection tool
+```bibtex
+@inproceedings{9506692,
+  author       = {{Vercheval, Nicolas and Pizurica, Aleksandra}},
+  booktitle    = {{2021 IEEE International Conference on Image Processing (ICIP)}},
+  title        = {{Hierarchical Variational Autoencoders for Visual Counterfactuals}},
+  year         = {{2021}},
+  pages        = {{3498-3502}},
+  doi          = {{10.1109/ICIP42928.2021.9506692}}
+}
 ```
