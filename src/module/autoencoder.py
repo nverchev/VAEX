@@ -25,6 +25,10 @@ from src.module.layers import (
 )
 
 
+PRIOR_LOGVAR_BOUND = 2.0
+POSTERIOR_LOGVAR_BOUND = 4.0
+
+
 class Abstract_VAE(nn.Module, abc.ABC):
     """Abstract base interface for hierarchical VAE architectures."""
 
@@ -148,8 +152,7 @@ class Abstract_VAE(nn.Module, abc.ABC):
         ).recon
 
     def sampling(self, mu: torch.Tensor, log_var: torch.Tensor, temperature: float = 1.0) -> torch.Tensor:
-        clamped_logvar = soft_clamp(log_var, min_val=-10.0, max_val=10.0)
-        std = torch.exp(0.5 * clamped_logvar)
+        std = torch.exp(0.5 * log_var)
         eps = torch.randn_like(std)
         z = eps.mul(std).add_(mu) if self.training else eps.mul(std * temperature).add_(mu)
         return z
@@ -335,7 +338,7 @@ class BVAE(Abstract_VAE, abc.ABC):
 
         d_mu, d_logvar = self.final_inference(x)
         out.d_mu.append(d_mu)
-        out.d_logvar.append(d_logvar)
+        out.d_logvar.append(soft_clamp(d_logvar, -POSTERIOR_LOGVAR_BOUND, POSTERIOR_LOGVAR_BOUND))
         return out
 
     @override
@@ -348,11 +351,12 @@ class BVAE(Abstract_VAE, abc.ABC):
         out.prior_mu = []
         out.prior_log_var = []
         p_mu, p_logvar = self.root_prior(condition)
+        p_logvar = soft_clamp(p_logvar, -PRIOR_LOGVAR_BOUND, PRIOR_LOGVAR_BOUND)
         posterior = bool(out.d_mu)
         if posterior:
             z = self.sampling(
                 posterior_weights[0] * out.d_mu[0] + p_mu,
-                out.d_logvar[0] + p_logvar,
+                posterior_weights[0] * out.d_logvar[0] + p_logvar,
                 temperature=self.sampling_variance[0],
             )
         else:
@@ -374,9 +378,11 @@ class BVAE(Abstract_VAE, abc.ABC):
             if not isinstance(from_latent, NullOp):
                 temperature = self.sampling_variance[level]
                 p_mu, p_logvar = generate(x, z)
+                p_logvar = soft_clamp(p_logvar, -PRIOR_LOGVAR_BOUND, PRIOR_LOGVAR_BOUND)
                 if h is not None:
                     h = merge(torch.cat([x, h], dim=1))
                     d_mu, d_logvar = inference(h)
+                    d_logvar = soft_clamp(d_logvar, -POSTERIOR_LOGVAR_BOUND, POSTERIOR_LOGVAR_BOUND)
                     z = self.sampling(
                         posterior_weights[level] * d_mu + p_mu,
                         posterior_weights[level] * d_logvar + p_logvar,

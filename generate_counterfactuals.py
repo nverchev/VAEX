@@ -13,7 +13,7 @@ from src.data.dataset import get_dataset
 from src.data.split import Partitions
 from src.data.structures import Inputs
 from src.module.classifier import get_classifier
-from src.train.models import load_extract_autoencoder_module
+from src.train.models import load_extract_generative_module
 
 
 def format_probs(probs: np.ndarray, class_names: list[str]) -> str:
@@ -42,7 +42,7 @@ def create_and_render_counterfactuals() -> None:
     test_dataset = get_dataset(partition)
     assert isinstance(test_dataset, Sized)
     class_names = cfg.data.dataset.classes
-    ema_module = load_extract_autoencoder_module()
+    ema_module = load_extract_generative_module()
     sample_indices = cfg_user.plot.sample_indices
     posterior_weights = cfg.autoencoder.objective.posterior_weights
 

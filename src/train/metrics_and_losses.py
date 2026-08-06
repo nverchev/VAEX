@@ -12,7 +12,6 @@ from collections.abc import Sequence
 from drytorch.lib.objectives import DictLoss, Loss, LossBase, Metric
 from src.config.experiment import Experiment
 from src.data.structures import Outputs, Targets
-from src.module.layers import soft_clamp
 
 
 def get_accuracy() -> Metric[torch.Tensor | Outputs, Targets]:
@@ -80,8 +79,6 @@ class KLDLoss:
         metrics: dict[str, torch.Tensor] = {}
         zipped = zip(outputs.d_mu, outputs.d_logvar, outputs.prior_log_var, self.freebits, strict=False)
         for i, (d_mu, d_logvar, p_logvar, stage_freebits) in enumerate(zipped):
-            d_logvar = soft_clamp(d_logvar, min_val=-10.0, max_val=10.0)
-            p_logvar = soft_clamp(p_logvar, min_val=-10.0, max_val=10.0)
             stage_matrix = -1 - d_logvar + d_logvar.exp() + (d_mu**2) * torch.exp(-p_logvar)
             stage_free_bits = self._free_bits(stage_matrix, stage_freebits)
             stage_kld_fb = 0.5 * stage_free_bits.mean(0).sum()

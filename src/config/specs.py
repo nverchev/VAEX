@@ -111,7 +111,6 @@ class ObjectiveConfig:
     Attributes:
         nll_sigma: Standard deviation (sigma) of the Gaussian NLL reconstruction loss.
             The corresponding variance is ``nll_sigma ** 2``.
-        scale_prior: Prior scaling factor for latent conditioning.
         posterior_weights: Per-stage weight on the posterior mean and log-variance
             offsets, one entry per latent stage. ``1.0`` keeps the stage posterior,
             ``0.0`` falls back to the stage prior. Passed to the model as an argument;
@@ -122,13 +121,18 @@ class ObjectiveConfig:
             applied at inference only. ``0.0`` decodes the posterior mean; ``1.0`` draws
             with the full learned scale. Note this scales sigma, so the variance moves
             with its square.
+        recalibrate_bn: Whether to re-estimate the BatchNorm running statistics on the
+            path given by ``posterior_weights`` once training is over, and save the result
+            one epoch past the trained weights. The trained checkpoint is left untouched,
+            so both stay loadable.
     """
 
     nll_sigma: float = 0.1
-    scale_prior: float = 5.0
     posterior_weights: tuple[float, ...] = (1.0, 1.0, 1.0, 1.0, 1.0, 1.0)
     sampling_temperature: float = 1.0
     sampling_variance: tuple[float, ...] = (0.0, 0.2, 0.4, 0.6, 0.8, 1.0)
+    recalibrate_bn: bool = True
+
 
 
 @dataclass

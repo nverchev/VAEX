@@ -7,7 +7,7 @@ import numpy as np
 import torch
 
 from src.config import AllConfig, Experiment, hydra_main
-from src.train.models import load_extract_autoencoder_module
+from src.train.models import load_extract_generative_module
 
 
 def to_numpy_img(tensor: torch.Tensor) -> np.ndarray:
@@ -23,7 +23,7 @@ def generate_samples() -> None:
     batch_size = cfg.user.generate.batch_size
     save_dir = cfg.user.path.version_dir / "images" / cfg.name / "generated"
     save_dir.mkdir(parents=True, exist_ok=True)
-    ema_module = load_extract_autoencoder_module()
+    ema_module = load_extract_generative_module()
     logging.info("Generating %d random samples using %s...", batch_size, type(ema_module).__name__)
     generated_images = ema_module.generate_sample(batch_size)
     grid_size = int(np.ceil(np.sqrt(batch_size)))

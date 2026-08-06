@@ -9,9 +9,10 @@ from src.config import AllConfig, Experiment, get_trackers, hydra_main
 from src.config.options import Models
 from src.module.autoencoder import get_autoencoder
 from src.train import get_learning_schema, get_loaders
+from src.train.batch_norm import BatchNormUpdater
 from src.train.hooks import register_checkpointing, register_early_stopping, register_pruning
 from src.train.metrics_and_losses import get_vae_loss
-from src.train.models import VAEEMAModel, VAEModel, load_extract_classifier_module
+from src.train.models import VAEEMAModel, VAEModel, clone_for_generation, load_extract_classifier_module
 from src.utils.parallel import DistributedWorker
 
 if TYPE_CHECKING:
@@ -67,6 +68,16 @@ def train_vae(trial: Trial | None = None) -> None:
         trainer.save_checkpoint()
 
     test()
+    if vae_cfg.objective.recalibrate_bn and isinstance(model, VAEEMAModel):
+        generative = clone_for_generation(model)
+        updater = BatchNormUpdater(
+            generative,
+            name=f'BatchNormUpdater_{vae_cfg.name}',
+            loader=eval_loader,
+        )
+        updater()
+        generative.save_state()
+
     return None
 
 

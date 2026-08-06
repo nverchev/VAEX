@@ -1,5 +1,7 @@
 """Subclasses for the Model and EMAModel classes."""
 
+import logging
+
 from typing import cast
 
 import torch
@@ -13,6 +15,7 @@ from src.module.autoencoder import get_autoencoder, Abstract_VAE
 from src.module.classifier import BaseClassifier, get_classifier
 from drytorch.core import exceptions as dry_exc
 
+GENERATIVE_SUFFIX = '_bn'
 
 ClassifierModel = Model[Inputs, torch.Tensor]
 
@@ -34,6 +37,55 @@ class VAEEMAModel(LogEpochMixin, EMAModel[Inputs, Outputs]):
     """VAE EMA model with epoch logging."""
 
 
+class GenerativeVAEModel(VAEModel):
+    """VAE model that decodes with the configured share of the posterior.
+
+    ``Abstract_VAE.forward`` always keeps the whole posterior, which is what training
+    needs. Generation and counterfactuals instead decode with ``posterior_weights``, and
+    running that path through the model rather than through the caller lets any drytorch
+    runner drive it.
+
+    Attributes:
+        posterior_weights: per-stage weight on the posterior offsets.
+    """
+
+    posterior_weights: tuple[float, ...]
+
+    def __init__(
+        self,
+        module: Abstract_VAE,
+        name: str = '',
+        device: torch.device | None = None,
+        *,
+        posterior_weights: tuple[float, ...],
+        **kwargs,
+    ) -> None:
+        """Initialize.
+
+        Args:
+            module: the autoencoder to wrap.
+            name: the name of the model.
+            device: the device where to store the weights.
+            posterior_weights: per-stage weight on the posterior offsets.
+            kwargs: forwarded to the base model.
+        """
+        super().__init__(module, name, device, **kwargs)
+        self.posterior_weights = posterior_weights
+        return
+
+    def __call__(self, inputs: Inputs) -> Outputs:
+        """Encode, then decode with the configured posterior weights."""
+        module = cast(Abstract_VAE, self.module)
+        with torch.autocast(device_type=self.device.type, enabled=self.mixed_precision):
+            condition = module.condition_from(inputs)
+            out = module.decode(module.encode(inputs.image), condition, self.posterior_weights)
+
+        out.image = inputs.image
+        out.condition = condition
+        out.model_epoch = self.epoch
+        return out
+
+
 def load_extract_autoencoder_module() -> Abstract_VAE:
     """Load and extract the autoencoder module from the EMA model."""
     cfg = Experiment.get_config()
@@ -42,6 +94,59 @@ def load_extract_autoencoder_module() -> Abstract_VAE:
     epoch = cfg.user.load if cfg.user.load != 0 else -1
     model.load_state(epoch)
     module = cast(Abstract_VAE, model.averaged_module)
+    module.eval()
+    return module
+
+
+def clone_for_generation(model: VAEEMAModel) -> GenerativeVAEModel:
+    """Copy the module used at inference into a model of its own.
+
+    The weights move through a state dictionary into a freshly built module, which is
+    both lighter than a deep copy and mirrors how the checkpoint is read back. It also
+    gives the clone a distinct module, as drytorch keys its registry on module identity
+    and would refuse to register the same object twice.
+
+    Args:
+        model: the trained model whose averaged module is copied.
+
+    Returns:
+        A model of its own at the same epoch, safe to modify and save.
+    """
+    cfg = Experiment.get_config()
+    clone = GenerativeVAEModel(
+        get_autoencoder().eval(),
+        name=f'{cfg.autoencoder.name}{GENERATIVE_SUFFIX}',
+        device=model.device,
+        posterior_weights=cfg.autoencoder.objective.posterior_weights,
+        should_compile=False,
+        should_distribute=False,
+    )
+    clone.module.load_state_dict(model.averaged_module.state_dict())
+    clone.epoch = model.epoch
+    return clone
+
+
+def load_extract_generative_module() -> Abstract_VAE:
+    """Load the autoencoder whose batch normalization suits the generative path.
+
+    Falls back to the plain averaged module when no such model was saved, so runs that
+    predate it, or that disabled ``recalibrate_bn``, still load.
+    """
+    cfg = Experiment.get_config()
+    autoencoder = get_autoencoder().eval()
+    model = VAEModel(
+        autoencoder,
+        name=f'{cfg.autoencoder.name}{GENERATIVE_SUFFIX}',
+        device=cfg.user.device,
+    )
+    epoch = cfg.user.load if cfg.user.load != 0 else -1
+    try:
+        model.load_state(epoch)
+    except (dry_exc.ModelNotFoundError, dry_exc.EpochNotFoundError):
+        logging.warning('No batch-norm recalibrated model found; using the averaged one.')
+        return load_extract_autoencoder_module()
+
+    module = cast(Abstract_VAE, model.module)
     module.eval()
     return module
 
@@ -62,11 +167,15 @@ def load_extract_classifier_module() -> BaseClassifier:
 
 
 __all__ = [
+    'GENERATIVE_SUFFIX',
     'ClassifierModel',
+    'GenerativeVAEModel',
     'VAEEMAModel',
     'VAEModel',
+    'clone_for_generation',
     'load_extract_autoencoder_module',
     'load_extract_classifier_module',
+    'load_extract_generative_module',
 ]
 
 
