@@ -6,6 +6,7 @@ from drytorch import DataLoader
 
 from src.data.dataset import get_datasets
 from src.data.derived_datasets import EvaluatedDataset
+from src.data.structures import Inputs, Targets
 
 if TYPE_CHECKING:
     from src.module.classifier import BaseClassifier
@@ -14,7 +15,7 @@ def get_loaders(
     batch_size: int,
     n_workers: int = 0,
     classifier: 'BaseClassifier | None' = None,
-) -> tuple[DataLoader, DataLoader]:
+) -> tuple[DataLoader[tuple[Inputs, Targets]], DataLoader[tuple[Inputs, Targets]]]:
     """Return (train_loader, eval_loader) for the current experiment phase."""
     train_dataset, eval_dataset = get_datasets()
     if classifier is not None:

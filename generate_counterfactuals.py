@@ -6,14 +6,14 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-from drytorch import Model
+
 
 from src.config import AllConfig, Experiment, hydra_main
 from src.data.dataset import get_dataset
 from src.data.split import Partitions
 from src.data.structures import Inputs
 from src.module.classifier import get_classifier
-from src.train.models import load_extract_generative_module
+from src.train.models import ClassifierModel, load_extract_generative_module
 
 
 # Lowest posterior weight ratio worth rendering: below it the counterfactual degrades
@@ -37,7 +37,7 @@ def create_and_render_counterfactuals() -> None:
     save_dir_base = cfg_user.path.version_dir / 'images' / cfg.name
     save_dir_base.mkdir(parents=True, exist_ok=True)
     classifier_module = get_classifier().eval()
-    classifier = Model(classifier_module, name=cfg.classification.name, device=cfg_user.device)
+    classifier = ClassifierModel(classifier_module, name=cfg.classification.name, device=cfg_user.device)
     try:
         classifier.load_state()
     except Exception:

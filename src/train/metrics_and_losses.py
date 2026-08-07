@@ -14,26 +14,25 @@ from src.config.experiment import Experiment
 from src.data.structures import Outputs, Targets
 
 
-def get_accuracy() -> Metric[torch.Tensor | Outputs, Targets]:
+
+def get_accuracy() -> Metric[torch.Tensor, Targets]:
     """Return top-1 per-sample accuracy metric."""
 
-    def _accuracy(outputs: torch.Tensor | Outputs, targets: Targets) -> torch.Tensor:
-        logits = outputs.logits if isinstance(outputs, Outputs) else outputs
+    def _accuracy(outputs: torch.Tensor, targets: Targets) -> torch.Tensor:
 
-        return (logits.argmax(dim=-1) == targets.label).float()
+        return (outputs.argmax(dim=-1) == targets.label).float()
 
-    return Metric(_accuracy, name='Accuracy')
+    return Metric[torch.Tensor, Targets](_accuracy, name='Accuracy')
 
 
-def get_cross_entropy() -> LossBase[torch.Tensor | Outputs, Targets]:
+def get_cross_entropy() -> Loss[torch.Tensor, Targets]:
     """Return cross-entropy loss objective."""
     ce = nn.CrossEntropyLoss(reduction='none')
 
-    def _cross_entropy(outputs: torch.Tensor | Outputs, targets: Targets) -> torch.Tensor:
-        logits = outputs.logits if isinstance(outputs, Outputs) else outputs
-        return ce(logits, targets.label)
+    def _cross_entropy(outputs: torch.Tensor, targets: Targets) -> torch.Tensor:
+        return ce(outputs, targets.label)
 
-    return Loss(_cross_entropy, name='CrossEntropy')
+    return Loss[torch.Tensor, Targets](_cross_entropy, name='CrossEntropy')
 
 
 class NLLLoss:
@@ -53,11 +52,11 @@ class NLLLoss:
         return {'NLL': NLL, 'MSE': MSE}
 
 
-def get_nll_loss() -> LossBase[Outputs, Targets]:
+def get_nll_loss() -> DictLoss[Outputs, Targets]:
     """Get Gaussian negative log-likelihood reconstruction loss component with MSE metric."""
     cfg = Experiment.get_config()
     objective_cfg = cfg.autoencoder.objective
-    return DictLoss(NLLLoss(variance=objective_cfg.sigma_2), name='NLL')
+    return DictLoss[Outputs, Targets](NLLLoss(variance=objective_cfg.sigma_2), name='NLL')
 
 
 class KLDLoss:
@@ -92,13 +91,13 @@ class KLDLoss:
         return metrics
 
 
-def get_kld_loss() -> LossBase[Outputs, Targets]:
+def get_kld_loss() -> DictLoss[Outputs, Targets]:
     """Get KL divergence loss component (free bits floor per latent stage)."""
     cfg = Experiment.get_config()
-    return DictLoss(KLDLoss(freebits=cfg.autoencoder.model.freebits), name='KLD_FB')
+    return DictLoss[Outputs, Targets](KLDLoss(freebits=cfg.autoencoder.model.freebits), name='KLD_FB')
 
 
-def get_annealing() -> LossBase[Outputs, Targets]:
+def get_annealing() -> Loss[Outputs, Targets]:
     """Get the cyclical annealing weight on the KL term.
 
     The weight ramps to one over each cycle and restarts, so the model periodically gets
@@ -121,7 +120,7 @@ def get_annealing() -> LossBase[Outputs, Targets]:
         weight = 0.5 * (1.0 - torch.cos(phase * math.pi))
         return torch.clamp(weight, min=min_weight)
 
-    return Loss(_annealing, name='Annealing')
+    return Loss[Outputs, Targets](_annealing, name='Annealing')
 
 
 def get_vae_loss() -> LossBase[Outputs, Targets]:
@@ -135,7 +134,7 @@ def get_vae_loss() -> LossBase[Outputs, Targets]:
     return nll + kld
 
 
-def get_classifier_loss() -> LossBase:
+def get_classifier_loss() -> LossBase[torch.Tensor, Targets]:
     """Get main loss objective based on active experiment configuration."""
     loss = get_cross_entropy()
     loss.watch(get_accuracy())
