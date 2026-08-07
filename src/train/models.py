@@ -105,6 +105,10 @@ def load_extract_generative_module() -> Abstract_VAE:
     predate it, or that disabled ``recalibrate_bn``, still load.
     """
     cfg = Experiment.get_config()
+    if not cfg.user.use_recalibrated_bn:
+        logging.info('Using the statistics training left, as requested.')
+        return load_extract_autoencoder_module()
+
     autoencoder = get_autoencoder().eval()
     model = VAEModel(
         autoencoder,

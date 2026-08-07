@@ -444,6 +444,11 @@ class UserSettings:
         checkpoint_every: Save a model checkpoint every *n* epochs.
         checkpoint_every: Save a model checkpoint every *n* epochs.
         load: Checkpoint epoch to resume from:``0`` skip; ``-1`` loads last checkpoint.
+        use_recalibrated_bn: Whether generation reads the model whose batch normalization
+            was re-estimated on the generative path. ``False`` reads the trained model
+            with the statistics training left, which is what a decoding path close to the
+            training one wants. Lives here rather than in the objective so that changing
+            it does not rename the run.
     """
 
     cpu: bool
@@ -453,6 +458,7 @@ class UserSettings:
     seed: int | None
     checkpoint_every: PositiveInt
     load: int = 0
+    use_recalibrated_bn: bool = True
     plot: PlottingOptions = dataclasses.field(default_factory=PlottingOptions)
     generate: GenerateOptions = dataclasses.field(default_factory=GenerateOptions)
     hydra: HydraSettings = dataclasses.field(default_factory=HydraSettings)

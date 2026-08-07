@@ -16,6 +16,11 @@ from src.module.classifier import get_classifier
 from src.train.models import load_extract_generative_module
 
 
+# Lowest posterior weight ratio worth rendering: below it the counterfactual degrades
+# faster than it gains, so the grid spans the usable range rather than the whole one.
+MIN_RATIO = 0.7
+
+
 def format_probs(probs: np.ndarray, class_names: list[str]) -> str:
     return f'({", ".join(f"{name}: {100 * p:.1f}%" for name, p in zip(class_names, probs, strict=True))})'
 
@@ -58,16 +63,16 @@ def create_and_render_counterfactuals() -> None:
         logits_recon = classifier(Inputs(image=recon_img))
         probs_recon = torch.softmax(logits_recon, dim=1).cpu().numpy()[0]
         n_delta = cfg_user.plot.n_delta
-        multipliers = [step / float(n_delta) for step in range(n_delta, -1, -1)]
+        ratios = [1.0 - (1.0 - MIN_RATIO) * step / n_delta for step in range(n_delta + 1)]
         cf_grids: list[tuple[list[np.ndarray], list[np.ndarray]]] = []
         for target_cls in range(len(class_names)):
             row_imgs: list[np.ndarray] = []
             row_probs: list[np.ndarray] = []
-            for multiplier in multipliers:
+            for ratio in ratios:
                 out_cf = ema_module.generate_counterfactual(
                     inputs,
                     target_dim=target_cls,
-                    posterior_weights=ema_module.posterior_weights_from(multiplier),
+                    posterior_weights=ema_module.posterior_weights_from(ratio),
                 )
                 cf_img = out_cf.recon if out_cf.recon is not None else img_tensor
                 l_cf = classifier(Inputs(image=cf_img))
@@ -96,7 +101,7 @@ def create_and_render_counterfactuals() -> None:
                 ax = axes[r + 1, c]
                 ax.imshow(img)
                 target_prob = probs[r]
-                ax.set_title(f'{class_names[r]}: {target_prob:.2f} (m={multipliers[c]:.2f})')
+                ax.set_title(f'{class_names[r]}: {target_prob:.2f} (r={ratios[c]:.2f})')
                 ax.axis('off')
 
         plt.tight_layout()
