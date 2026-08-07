@@ -1,5 +1,5 @@
 posterior_weight_multiplier: 0.8
-nll_sigma: 0.1
+sigma_2: 1
 
 sampling_variance: [.1,.2,.3,.4,.5,.6]
 recalibrate_bn: true

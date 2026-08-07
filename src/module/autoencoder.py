@@ -263,10 +263,6 @@ class BVAE(Abstract_VAE, abc.ABC):
         return
 
     def _build_decoder_layers(self) -> None:
-        # p(z_root | condition). Linear on a one-hot condition is a per-class lookup of
-        # (mean, log-variance); soft conditions interpolate between those entries.
-        # Truncated init starts every class at N(0, 1) so training warms up from the
-        # unconditional prior.
         self.root_prior_net = LinearLayer(self.dim_target, 2 * self.flat_z_dim, use_trunc_init=True)
         self.h = nn.parameter.Parameter(torch.ones(1, self.h_dims[-1], self.final_res, self.final_res))
         self.back_to_img = FromLatentConv(self.h_dims[-1], self.final_z_dim, self.final_res)
@@ -302,11 +298,11 @@ class BVAE(Abstract_VAE, abc.ABC):
                 generate: ToLatentBlock
                 inference: ToLatentBlock
                 if self.inference_block == InferenceBlock.Mobile:
-                    generate = ToLatentConvMobile(h_out, z_dim, res, aux_dim)
-                    inference = ToLatentConvMobile(h_out, z_dim, res)
+                    generate = ToLatentConvMobile(h_out, z_dim, res, aux_dim, cond_dim=self.dim_target)
+                    inference = ToLatentConvMobile(h_out, z_dim, res, cond_dim=self.dim_target)
                 else:
-                    generate = ToLatentConvADAIN(h_out, z_dim, res, aux_dim)
-                    inference = ToLatentConvADAIN(h_out, z_dim, res)
+                    generate = ToLatentConvADAIN(h_out, z_dim, res, aux_dim, cond_dim=self.dim_target)
+                    inference = ToLatentConvADAIN(h_out, z_dim, res, cond_dim=self.dim_target)
 
                 merge = ConvBlock(2 * h_out, h_out)
                 self.inference_list.append(inference)
@@ -379,6 +375,7 @@ class BVAE(Abstract_VAE, abc.ABC):
     ) -> Outputs:
         out.prior_mu = []
         out.prior_log_var = []
+        stage_condition = self._process_condition(condition)
         p_mu, p_logvar = self.root_prior(condition)
         p_logvar = soft_clamp(p_logvar, -PRIOR_LOGVAR_BOUND, PRIOR_LOGVAR_BOUND)
         posterior = bool(out.d_mu)
@@ -406,11 +403,11 @@ class BVAE(Abstract_VAE, abc.ABC):
 
             if not isinstance(from_latent, NullOp):
                 temperature = self.sampling_variance[level]
-                p_mu, p_logvar = generate(x, z)
+                p_mu, p_logvar = generate(x, z, stage_condition)
                 p_logvar = soft_clamp(p_logvar, -PRIOR_LOGVAR_BOUND, PRIOR_LOGVAR_BOUND)
                 if h is not None:
                     h = merge(torch.cat([x, h], dim=1))
-                    d_mu, d_logvar = inference(h)
+                    d_mu, d_logvar = inference(h, condition=stage_condition)
                     d_logvar = soft_clamp(d_logvar, -POSTERIOR_LOGVAR_BOUND, POSTERIOR_LOGVAR_BOUND)
                     z = self.sampling(
                         posterior_weights[level] * d_mu + p_mu,

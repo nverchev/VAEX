@@ -3,7 +3,8 @@ defaults:
   - early_stopping: default_early_stopping
   - _self_
 
-n_epochs: 50
+n_epochs: 100
 batch_size: 32
 _n_subprocesses: ${user.n_subprocesses}
-annealing_period: 45
+annealing_period: 90
+annealing_cycles: 2

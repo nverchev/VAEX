@@ -109,8 +109,9 @@ class ObjectiveConfig:
     """Specification for Autoencoder / VAE loss objective and metrics parameters.
 
     Attributes:
-        nll_sigma: Standard deviation (sigma) of the Gaussian NLL reconstruction loss.
-            The corresponding variance is ``nll_sigma ** 2``.
+        sigma_2: Variance of the Gaussian NLL reconstruction loss, given directly rather
+            than as a standard deviation. It sets the weight of reconstruction against the
+            KL: the reconstruction term scales as ``1 / sigma_2``.
         posterior_weight_multiplier: Ratio between the posterior weights of consecutive
             latent stages, growing towards the pixels: the finest stage keeps its whole
             posterior and each stage above it keeps ``multiplier`` times the weight of
@@ -133,7 +134,7 @@ class ObjectiveConfig:
             both stay loadable.
     """
 
-    nll_sigma: float = 0.1
+    sigma_2: float = 1.0
     posterior_weight_multiplier: float = 0.5
     cf_temperature: float = 1.0
     sampling_temperature: float = 1.0
@@ -288,6 +289,10 @@ class TrainingConfig:
         learn: Optimiser and scheduler configuration.
         n_epochs: Maximum number of training epochs.
         early_stopping: Early stopping configuration.
+        annealing_period: Epochs over which the KL weight is annealed. Past it the weight
+            stays at one.
+        annealing_cycles: Number of times the KL weight ramps back to one within that
+            period, so that reconstruction pressure returns periodically instead of once.
     """
 
     batch_size: StrictlyPositiveInt = 32
@@ -295,7 +300,8 @@ class TrainingConfig:
     n_epochs: StrictlyPositiveInt = 10
     early_stopping: EarlyStoppingConfig = dataclasses.field(default_factory=EarlyStoppingConfig)
     _n_subprocesses: PositiveInt = 0
-    annealing_period: int = 45
+    annealing_period: int = 90
+    annealing_cycles: StrictlyPositiveInt = 2
 
     @model_validator(mode='after')
     def _check_batch_divisibility(self) -> Self:

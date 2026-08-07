@@ -39,9 +39,9 @@ def get_cross_entropy() -> LossBase[torch.Tensor | Outputs, Targets]:
 class NLLLoss:
     """Callable class for Gaussian negative log-likelihood reconstruction loss component."""
 
-    def __init__(self, sigma: float = 0.1) -> None:
+    def __init__(self, variance: float = 0.1) -> None:
         self.adj_nll: float = 0.5 * math.log(2 * math.pi)
-        self.var: float = sigma ** 2
+        self.var: float = variance
         self.logvar: float = math.log(self.var)
         return
 
@@ -57,7 +57,7 @@ def get_nll_loss() -> LossBase[Outputs, Targets]:
     """Get Gaussian negative log-likelihood reconstruction loss component with MSE metric."""
     cfg = Experiment.get_config()
     objective_cfg = cfg.autoencoder.objective
-    return DictLoss(NLLLoss(sigma=objective_cfg.nll_sigma), name='NLL')
+    return DictLoss(NLLLoss(variance=objective_cfg.sigma_2), name='NLL')
 
 
 class KLDLoss:
@@ -99,17 +99,26 @@ def get_kld_loss() -> LossBase[Outputs, Targets]:
 
 
 def get_annealing() -> LossBase[Outputs, Targets]:
-    """Get (reverse) annealing component matching SurfaceVAE."""
+    """Get the cyclical annealing weight on the KL term.
+
+    The weight ramps to one over each cycle and restarts, so the model periodically gets
+    the reconstruction pressure back and can re-enter the latents it had begun to give up.
+    Past the annealing period the weight stays at one for the rest of training.
+    """
     cfg = Experiment.get_config()
     annealing_period = cfg.autoencoder.train.annealing_period
+    cycles = cfg.autoencoder.train.annealing_cycles
 
     min_weight = 0.01
 
     def _annealing(outputs: Outputs, _: Targets) -> torch.Tensor:
         device = outputs.recon.device
-        time_fraction = torch.tensor(outputs.model_epoch / annealing_period, device=device)
-        time_fraction = torch.clamp(time_fraction, 0.0, 1.0)
-        weight = 0.5 * (1.0 - torch.cos(time_fraction * math.pi))
+        progress = torch.tensor(outputs.model_epoch / annealing_period, device=device)
+        if progress >= 1.0:
+            return torch.ones((), device=device)
+
+        phase = torch.remainder(progress * cycles, 1.0)
+        weight = 0.5 * (1.0 - torch.cos(phase * math.pi))
         return torch.clamp(weight, min=min_weight)
 
     return Loss(_annealing, name='Annealing')

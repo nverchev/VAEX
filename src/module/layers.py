@@ -58,8 +58,13 @@ class Weighted(Protocol):
 class ToLatentBlock(Protocol):
     """Protocol for inference/generate modules projecting feature maps to latent parameters (mu, log_var)."""
 
-    def __call__(self, x: torch.Tensor, aux: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
-        """Project input x and optional aux condition to mu and log_var."""
+    def __call__(
+        self,
+        x: torch.Tensor,
+        aux: torch.Tensor | None = None,
+        condition: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Project input x, an optional aux latent and an optional condition to mu and log_var."""
         ...
 
 
@@ -491,7 +496,7 @@ class ToLatentConvADAIN(nn.Module):
     start near zero for training stability.
     """
 
-    def __init__(self, h_dim: int, z_dim: int, l_dim: int, aux_dim: int = 0) -> None:
+    def __init__(self, h_dim: int, z_dim: int, l_dim: int, aux_dim: int = 0, cond_dim: int = 0) -> None:
         super().__init__()
         if aux_dim:
             self.aux_conv = nn.Sequential(
@@ -499,13 +504,28 @@ class ToLatentConvADAIN(nn.Module):
                 View(-1, 2 * h_dim, 1, 1),
             )
 
+        if cond_dim:
+            self.cond_conv = nn.Sequential(
+                LinearLayer(cond_dim, 2 * h_dim, use_trunc_init=True),
+                View(-1, 2 * h_dim, 1, 1),
+            )
+
         self.tolatent = Conv2dLayer(h_dim, 2 * z_dim, kernel_size=3, stride=2, padding=1, use_trunc_init=True)
         return
 
-    def forward(self, x: torch.Tensor, aux: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(
+        self,
+        x: torch.Tensor,
+        aux: torch.Tensor | None = None,
+        condition: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         if aux is not None:
             mu, std = self.aux_conv(aux).chunk(2, 1)
             x = F.instance_norm(x) * torch.sigmoid(std) + mu
+
+        if condition is not None:
+            scale, shift = self.cond_conv(condition).chunk(2, 1)
+            x = x * (1 + scale) + shift
 
         x = self.tolatent(x)
         return x.flatten(1).chunk(2, 1)
@@ -514,7 +534,7 @@ class ToLatentConvADAIN(nn.Module):
 class ToLatentConvMobile(nn.Module):
     """Inference block using MobileBlock and concatenation."""
 
-    def __init__(self, h_dim: int, z_dim: int, l_dim: int, aux_dim: int = 0) -> None:
+    def __init__(self, h_dim: int, z_dim: int, l_dim: int, aux_dim: int = 0, cond_dim: int = 0) -> None:
         super().__init__()
         if aux_dim:
             self.aux_conv = nn.Sequential(
@@ -525,13 +545,28 @@ class ToLatentConvMobile(nn.Module):
         else:
             self.aux_conv = None
 
+        if cond_dim:
+            self.cond_conv = nn.Sequential(
+                LinearLayer(cond_dim, 2 * (h_dim + aux_dim), use_trunc_init=True),
+                View(-1, 2 * (h_dim + aux_dim), 1, 1),
+            )
+
         self.tolatent = Conv2dLayer(h_dim + aux_dim, 2 * z_dim, kernel_size=3, stride=2, padding=1, use_trunc_init=True)
         return
 
-    def forward(self, x: torch.Tensor, aux: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(
+        self,
+        x: torch.Tensor,
+        aux: torch.Tensor | None = None,
+        condition: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         if aux is not None and self.aux_conv is not None:
             aux = self.aux_conv(aux)
             x = torch.cat([x, aux], dim=1)
+
+        if condition is not None:
+            scale, shift = self.cond_conv(condition).chunk(2, 1)
+            x = x * (1 + scale) + shift
 
         x = self.tolatent(x)
         return x.flatten(1).chunk(2, 1)
