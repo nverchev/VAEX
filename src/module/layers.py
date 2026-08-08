@@ -733,3 +733,36 @@ def reset_parameters_recursive(module: nn.Module, warn: bool = False) -> None:
         reset_parameters_recursive(child, warn=warn)
 
     return
+
+
+class GradReverse(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x: torch.Tensor, lambda_: float) -> torch.Tensor:
+        ctx.lambda_ = lambda_
+        return x.view_as(x)
+
+    @staticmethod
+    def backward(ctx, *grad_outputs: torch.Tensor) -> tuple:
+        grad_output = grad_outputs[0]
+        return -ctx.lambda_ * grad_output, None
+
+
+class InformationEraser(nn.Module):
+    """Predict logits but reverse the gradient to erase information with the target."""
+
+    def __init__(self, in_dim: int, n_classes: int, reversal_strength: float = 0.5, intermediate_dim: int = 512) -> None:
+        super().__init__()
+        self.in_dim: int = in_dim
+        self.intermediate_dim: int = intermediate_dim
+        self.n_classes: int = n_classes
+        self.reversal_strength = reversal_strength
+        self.mlp = nn.Sequential(
+            LinearLayer(self.in_dim, self.intermediate_dim, act_cls=nn.ReLU),
+            LinearLayer(self.intermediate_dim, self.n_classes),
+        )
+        return
+
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        """Forward pass."""
+        reversed_features = GradReverse.apply(features, self.reversal_strength)
+        return self.mlp(reversed_features)

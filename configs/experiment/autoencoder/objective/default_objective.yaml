@@ -3,4 +3,5 @@ sigma_2: .1
 
 sampling_variance: [.1,.2,.3,.4,.5,.6]
 recalibrate_bn: true
+reversal_strength: 0.5
 

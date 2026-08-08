@@ -132,6 +132,7 @@ class ObjectiveConfig:
             decoding path the posterior weights define, once training is over, and save
             the result as a separate model. The trained checkpoint is left untouched, so
             both stay loadable.
+        reversal_strength: Multiplier for the gradient reversed in the InformationEraser layer.
     """
 
     sigma_2: float = 1.0
@@ -140,6 +141,7 @@ class ObjectiveConfig:
     sampling_temperature: float = 1.0
     sampling_variance: tuple[float, ...] = (0.0, 0.2, 0.4, 0.6, 0.8, 1.0)
     recalibrate_bn: bool = True
+    reversal_strength: float = 0.5
 
 
 
@@ -149,8 +151,10 @@ class ModelConfig:
 
     Attributes:
         name: Model architecture variant to instantiate.
-        architecture: VAE architecture hyperparameters.
+        architecture: VAEArchitectureConfig
         z_dims: Per-stage latent dimensions; must match freebits in length.
+        z_free_dim: Dimension of the unconditioned root latent space.
+        z_cond_dim: Dimension of the conditioned root latent space.
         freebits: Free-bits floor per latent stage.
         ema_decay: Exponential moving average decay rate for model weights.
         temperature: Temperature scaling factor for logits in conditional models (e.g. VAEX).
@@ -159,6 +163,8 @@ class ModelConfig:
     name: Models = Models.VAEX
     architecture: VAEArchitectureConfig = dataclasses.field(default_factory=VAEArchitectureConfig)
     z_dims: tuple[StrictlyPositiveInt, ...] = (1, 2, 4, 8, 16, 32)
+    z_free_dim: int = 16
+    z_cond_dim: int = 16
     freebits: tuple[float, ...] = (0.5, 0.25, 0.125, 0.0625, 0.03125, 0.0)
     ema_decay: float = 0.999
     temperature: float = 5.0
@@ -168,6 +174,14 @@ class ModelConfig:
         if len(self.freebits) != len(self.z_dims):
             msg = 'freebits (len {}) must match z_dims (len {}) in length.'
             raise ValueError(msg.format(len(self.freebits), len(self.z_dims)))
+
+        return self
+
+    @model_validator(mode='after')
+    def _check_z1_dim_matches(self) -> Self:
+        if self.z_dims[-1] != self.z_free_dim + self.z_cond_dim:
+            msg = 'z1 (z_dims[-1] = {}) must equal z_free_dim ({}) + z_cond_dim ({}).'
+            raise ValueError(msg.format(self.z_dims[-1], self.z_free_dim, self.z_cond_dim))
 
         return self
 
@@ -302,6 +316,7 @@ class TrainingConfig:
     _n_subprocesses: PositiveInt = 0
     annealing_period: int = 90
     annealing_cycles: StrictlyPositiveInt = 2
+    adv_warmup_epochs: int = 3
 
     @model_validator(mode='after')
     def _check_batch_divisibility(self) -> Self:

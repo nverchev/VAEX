@@ -88,7 +88,7 @@ def report() -> None:
     _, eval_loader = get_loaders(cfg.autoencoder.train.batch_size_per_device, classifier=classifier)
     kl, p_logvar, d_mu_sq, roots, labels, n_seen = collect(module, eval_loader, device, N_BATCHES)
 
-    logging.info('samples: %d | nll_sigma: %s', n_seen, cfg.autoencoder.objective.nll_sigma)
+    logging.info('samples: %d | sigma_2: %s', n_seen, cfg.autoencoder.objective.sigma_2)
     header = f'{"stage":>5} {"dims":>6} {"KL":>9} {"KL/dim":>8} {"dead%":>7} {"KL p90/p50":>11} '
     header += f'{"p_logvar":>9} {"at bound%":>10}'
     logging.info(header)
@@ -138,7 +138,62 @@ def report() -> None:
     logging.info('')
     logging.info('linear probe on root d_mu -> label: %.3f accuracy', accuracy)
     logging.info('label balance: %.3f', float(labels.float().mean()))
+    confidence_residual(module, eval_loader, device, N_BATCHES)
     per_stage_class_content(module, eval_loader, device, N_BATCHES)
+    return
+
+
+@torch.no_grad()
+def confidence_residual(module, loader, device, n_batches: int) -> None:
+    """Test whether the class left in the root offset is classifier-confidence in disguise.
+
+    The root prior is affine in the condition, so two images of one class with different
+    classifier confidence get different prior means, and the encoder has to cancel the
+    difference. If that is what ``d_mu`` is doing, its class content should vanish once
+    the confidence-linear component is removed.
+    """
+    roots: list[torch.Tensor] = []
+    labels: list[torch.Tensor] = []
+    confidences: list[torch.Tensor] = []
+    for i, (inputs, targets) in enumerate(loader):
+        if i >= n_batches:
+            break
+
+        inputs = Inputs(*(tensor.to(device) for tensor in inputs))
+        out = module(inputs)
+        roots.append(out.d_mu[0].float().cpu())
+        labels.append(targets.label.cpu())
+        confidences.append(module.condition_from(inputs)[:, 1].float().cpu())
+
+    d_mu = torch.cat(roots)
+    y = torch.cat(labels)
+    p = torch.cat(confidences)
+
+    # Centre within each class so the slope reflects confidence alone, not the class.
+    d_centred = d_mu.clone()
+    p_centred = p.clone()
+    for cls in (0, 1):
+        mask = y == cls
+        d_centred[mask] -= d_mu[mask].mean(0)
+        p_centred[mask] -= p[mask].mean()
+
+    slope = (d_centred * p_centred[:, None]).sum(0) / (p_centred**2).sum()
+    residual = d_centred - slope[None, :] * p_centred[:, None]
+    r2 = 1 - float(residual.var(0).sum() / d_centred.var(0).sum())
+
+    delta_p = (module.root_prior(torch.eye(module.dim_target, device=device))[0][1]
+               - module.root_prior(torch.eye(module.dim_target, device=device))[0][0]).float().cpu()
+    logging.info('')
+    logging.info('within-class confidence spread (std of p): %.4f', float(p_centred.std()))
+    logging.info('variance of d_mu explained by confidence : %.4f', r2)
+    logging.info('cosine(slope, delta_p_mu)                : %+.3f  (compensation predicts -1)',
+                 float(F.cosine_similarity(slope, delta_p, dim=0)))
+
+    # Strip the confidence-linear part and ask the probe again.
+    stripped = d_mu - slope[None, :] * (p - p.mean())[:, None]
+    logging.info('probe on d_mu                            : %.3f', probe(d_mu, y))
+    logging.info('probe on d_mu minus confidence component : %.3f', probe(stripped, y))
+    logging.info('base rate                                : %.3f', float(max(y.float().mean(), 1 - y.float().mean())))
     return
 
 

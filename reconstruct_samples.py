@@ -54,8 +54,7 @@ def reconstruct_samples() -> None:
         )
         inputs = Inputs(image=img_tensor, condition=cond_tensor)
         if classifier is not None:
-            logits = classifier(inputs)
-            inputs = inputs._replace(logits=logits)
+            inputs = inputs._replace(log_probs=torch.log_softmax(classifier(inputs), dim=1))
 
         outputs = vae_module(inputs)
         recon_img = outputs.recon

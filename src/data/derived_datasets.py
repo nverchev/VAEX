@@ -25,8 +25,9 @@ class ClassifierMixin:
 
     @torch.inference_mode()
     def _classify(self, batch_inputs: Inputs) -> torch.Tensor:
+        """Return the classifier's log-probabilities."""
         self.classifier.eval()
-        return self.classifier(batch_inputs)
+        return torch.log_softmax(self.classifier(batch_inputs), dim=-1)
 
 
 class AutoencoderMixin(Generic[V]):
@@ -97,10 +98,11 @@ class ProcessedDataset(abc.ABC):
     @staticmethod
     def _unbind(batch_inputs: Inputs, batch_targets: Targets) -> list[tuple[Inputs, Targets]]:
         batch_size = len(batch_targets.label)
-        has_logits = batch_inputs.logits.numel() > 0
+        has_log_probs = batch_inputs.log_probs.numel() > 0
+        empty = torch.empty(0)
         return [
             (
-                Inputs(image=batch_inputs.image[i], logits=batch_inputs.logits[i] if has_logits else torch.empty(0)),
+                Inputs(image=batch_inputs.image[i], log_probs=batch_inputs.log_probs[i] if has_log_probs else empty),
                 Targets(ref=batch_targets.ref[i], label=batch_targets.label[i]),
             )
             for i in range(batch_size)
@@ -113,7 +115,7 @@ class ProcessedDataset(abc.ABC):
 
 
 class EvaluatedDataset(ClassifierMixin, ProcessedDataset, Dataset[tuple[Inputs, Targets]]):
-    """Dataset that attaches classifier logits to each sample."""
+    """Dataset that attaches classifier log-probabilities to each sample."""
 
     def __init__(
         self,
@@ -127,7 +129,7 @@ class EvaluatedDataset(ClassifierMixin, ProcessedDataset, Dataset[tuple[Inputs, 
     @override
     def __getitems__(self, index_list: list[int]) -> list[tuple[Inputs, Targets]]:
         batch_inputs, batch_targets = self._collate(index_list)
-        batch_inputs = batch_inputs._replace(logits=self._classify(batch_inputs))
+        batch_inputs = batch_inputs._replace(log_probs=self._classify(batch_inputs))
         return self._unbind(batch_inputs, batch_targets)
 
 
@@ -156,7 +158,7 @@ class ReconstructedDataset(AutoencoderMixin[V], ProcessedDataset, Generic[V], Da
 
 
 class ReconstructedEvaluatedDataset(CounterfactualMixin, ProcessedDataset, Dataset[tuple[Inputs, Targets]]):
-    """Dataset that classifies inputs first, then reconstructs using logits."""
+    """Dataset that classifies inputs first, then reconstructs using the classifier distribution."""
 
     def __init__(
         self,
@@ -172,12 +174,12 @@ class ReconstructedEvaluatedDataset(CounterfactualMixin, ProcessedDataset, Datas
     @override
     def __getitems__(self, index_list: list[int]) -> list[tuple[Inputs, Targets]]:
         batch_inputs, batch_targets = self._collate(index_list)
-        batch_inputs = batch_inputs._replace(logits=self._classify(batch_inputs))
+        batch_inputs = batch_inputs._replace(log_probs=self._classify(batch_inputs))
         recons = self._reconstruct(batch_inputs).recon
         if recons is None:
             recons = batch_inputs.image
 
-        batch_inputs = Inputs(image=recons, logits=batch_inputs.logits)
+        batch_inputs = Inputs(image=recons, log_probs=batch_inputs.log_probs)
         batch_targets = Targets(ref=recons, label=batch_targets.label)
         return self._unbind(batch_inputs, batch_targets)
 
@@ -201,12 +203,12 @@ class CounterfactualDataset(CounterfactualMixin, ProcessedDataset, Dataset[tuple
     @override
     def __getitems__(self, index_list: list[int]) -> list[tuple[Inputs, Targets]]:
         batch_inputs, batch_targets = self._collate(index_list)
-        batch_inputs = batch_inputs._replace(logits=self._classify(batch_inputs))
+        batch_inputs = batch_inputs._replace(log_probs=self._classify(batch_inputs))
         recons = self._generate_counterfactual(batch_inputs).recon
         if recons is None:
             recons = batch_inputs.image
 
-        batch_inputs = Inputs(image=recons, logits=batch_inputs.logits)
+        batch_inputs = Inputs(image=recons, log_probs=batch_inputs.log_probs)
         target_tensor = torch.full_like(batch_targets.label, self.target_class)
         batch_targets = Targets(ref=recons, label=target_tensor)
         return self._unbind(batch_inputs, batch_targets)

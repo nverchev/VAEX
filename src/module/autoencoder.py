@@ -20,6 +20,7 @@ from src.module.layers import (
     ToLatentBlock,
     ToLatentConvADAIN,
     ToLatentConvMobile,
+    InformationEraser,
     reverse_zip,
     soft_clamp,
 )
@@ -39,6 +40,9 @@ class Abstract_VAE(nn.Module, abc.ABC):
     sampling_variance: tuple[float, ...]
     posterior_weight_multiplier: float
     cf_temperature: float
+    z_free_dim: int
+    z_cond_dim: int
+    reversal_strength: float
 
     def __init__(self) -> None:
         super().__init__()
@@ -50,6 +54,9 @@ class Abstract_VAE(nn.Module, abc.ABC):
         self.sampling_variance = exp_cfg.autoencoder.objective.sampling_variance
         self.posterior_weight_multiplier = exp_cfg.autoencoder.objective.posterior_weight_multiplier
         self.cf_temperature = exp_cfg.autoencoder.objective.cf_temperature
+        self.z_free_dim = exp_cfg.autoencoder.model.z_free_dim
+        self.z_cond_dim = exp_cfg.autoencoder.model.z_cond_dim
+        self.reversal_strength = exp_cfg.autoencoder.objective.reversal_strength
         return
 
     @property
@@ -125,6 +132,7 @@ class Abstract_VAE(nn.Module, abc.ABC):
         out = self.decode(out, condition, self.full_posterior_weights)
         out.image = x
         out.condition = condition
+        out.logits = inputs.log_probs if inputs.log_probs.numel() > 0 else condition.clamp_min(1e-8).log()
         return out
 
     def generate_counterfactual(
@@ -237,6 +245,16 @@ class BVAE(Abstract_VAE, abc.ABC):
         """Flat width of the root latent."""
         return self.final_z_dim * ((self.final_res + 1) // 2) ** 2
 
+    @property
+    def flat_z_free_dim(self) -> int:
+        """Flat width of the unconditioned root latent."""
+        return self.z_free_dim * ((self.final_res + 1) // 2) ** 2
+
+    @property
+    def flat_z_cond_dim(self) -> int:
+        """Flat width of the conditioned root latent."""
+        return self.z_cond_dim * ((self.final_res + 1) // 2) ** 2
+
     def _build_encoder_layers(self) -> None:
         self.initial_convolution = nn.Conv2d(self.n_channels, self.h_dims[0], 1, bias=False)
         self.encoding = nn.ModuleList([])
@@ -263,7 +281,13 @@ class BVAE(Abstract_VAE, abc.ABC):
         return
 
     def _build_decoder_layers(self) -> None:
-        self.root_prior_net = LinearLayer(self.dim_target, 2 * self.flat_z_dim, use_trunc_init=True)
+        self.root_prior_cond = LinearLayer(self.dim_target, 2 * self.flat_z_cond_dim, use_trunc_init=True)
+        self.root_prior_free = nn.parameter.Parameter(torch.zeros(1, 2 * self.flat_z_free_dim))
+        self.information_eraser = InformationEraser(
+            in_dim=self.flat_z_free_dim,
+            n_classes=self.dim_target,
+            reversal_strength=self.reversal_strength
+        )
         self.h = nn.parameter.Parameter(torch.ones(1, self.h_dims[-1], self.final_res, self.final_res))
         self.back_to_img = FromLatentConv(self.h_dims[-1], self.final_z_dim, self.final_res)
         self.decode_list = nn.ModuleList([])
@@ -351,7 +375,14 @@ class BVAE(Abstract_VAE, abc.ABC):
         return (L_in - 1) * stride - 2 * padding + dilation * (kernel_size - 1) + output_padding + 1
 
     def root_prior(self, condition: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        return self.root_prior_net(self._process_condition(condition)).chunk(2, dim=1)
+        p_mu_cond, p_logvar_cond = self.root_prior_cond(self._process_condition(condition)).chunk(2, dim=1)
+        p_mu_free, p_logvar_free = self.root_prior_free.chunk(2, dim=1)
+        batch_size = condition.size(0)
+        p_mu_free = p_mu_free.expand(batch_size, -1)
+        p_logvar_free = p_logvar_free.expand(batch_size, -1)
+        p_mu = torch.cat([p_mu_cond, p_mu_free], dim=1)
+        p_logvar = torch.cat([p_logvar_cond, p_logvar_free], dim=1)
+        return p_mu, p_logvar
 
     @override
     def encode(self, x: torch.Tensor) -> Outputs:
@@ -385,6 +416,10 @@ class BVAE(Abstract_VAE, abc.ABC):
                 posterior_weights[0] * out.d_logvar[0] + p_logvar,
                 temperature=self.sampling_variance[0],
             )
+            p_mu_free = p_mu[:, self.flat_z_cond_dim:]
+            d_mu_free = out.d_mu[0][:, self.flat_z_cond_dim:]
+            mu_free = p_mu_free + d_mu_free
+            out.adv_logits = self.information_eraser(mu_free)
         else:
             z = self.sampling(p_mu, p_logvar, temperature=self.sampling_variance[0])
 
@@ -477,11 +512,11 @@ class VAEX(BVAE):
 
     @override
     def condition_from(self, inputs: Inputs) -> torch.Tensor:
-        """Map classifier logits to a shift-invariant conditioning vector."""
-        if inputs.logits.numel() == 0:
-            raise ValueError('logits MUST be in Inputs else fail')
+        """Temper the classifier's distribution into a conditioning vector."""
+        if inputs.log_probs.numel() == 0:
+            raise ValueError('log_probs MUST be in Inputs else fail')
 
-        return torch.softmax(inputs.logits / self.temperature, dim=1)
+        return torch.softmax(inputs.log_probs / self.temperature, dim=1)
 
     @override
     def sample_condition(self, batch_size: int = 1) -> torch.Tensor:

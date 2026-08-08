@@ -7,11 +7,11 @@ import torch
 
 
 class Inputs(NamedTuple):
-    """Input batch containing image tensor, condition tensor, and logits."""
+    """Input batch containing image tensor, condition tensor, and classifier log-probabilities."""
 
     image: torch.Tensor
     condition: torch.Tensor = torch.empty(0)
-    logits: torch.Tensor = torch.empty(0)
+    log_probs: torch.Tensor = torch.empty(0)
 
     @property
     def features(self) -> torch.Tensor:
@@ -33,7 +33,7 @@ class Outputs:
     recon: torch.Tensor = dataclasses.field(init=False)
     image: torch.Tensor = dataclasses.field(init=False)
     logits: torch.Tensor = dataclasses.field(init=False)
-
+    adv_logits: torch.Tensor = dataclasses.field(init=False)
     d_mu: list[torch.Tensor] = dataclasses.field(default_factory=list)
     d_logvar: list[torch.Tensor] = dataclasses.field(default_factory=list)
     prior_mu: list[torch.Tensor] = dataclasses.field(default_factory=list)

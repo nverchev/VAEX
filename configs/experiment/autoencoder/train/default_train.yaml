@@ -8,3 +8,4 @@ batch_size: 32
 _n_subprocesses: ${user.n_subprocesses}
 annealing_period: 90
 annealing_cycles: 2
+adv_warmup_epochs: 3

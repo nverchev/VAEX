@@ -55,9 +55,9 @@ def create_and_render_counterfactuals() -> None:
         img_tensor = inputs_item.image.unsqueeze(0).to(classifier.device)
         img_class = target_item.label.unsqueeze(0).to(classifier.device)
         inputs = Inputs(image=img_tensor, condition=img_class)
-        logits_orig = classifier(inputs)
-        probs_orig = torch.softmax(logits_orig, dim=1).cpu().numpy()[0]
-        inputs = inputs._replace(logits=logits_orig)
+        log_probs_orig = torch.log_softmax(classifier(inputs), dim=1)
+        probs_orig = log_probs_orig.exp().cpu().numpy()[0]
+        inputs = inputs._replace(log_probs=log_probs_orig)
         out_recon = ema_module(inputs)
         recon_img = out_recon.recon if out_recon.recon is not None else img_tensor
         logits_recon = classifier(Inputs(image=recon_img))

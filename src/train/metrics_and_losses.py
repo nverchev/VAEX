@@ -123,15 +123,37 @@ def get_annealing() -> Loss[Outputs, Targets]:
     return Loss[Outputs, Targets](_annealing, name='Annealing')
 
 
+def get_adversarial_loss() -> LossBase[Outputs, Targets]:
+    """Get adversarial loss to erase classifier info."""
+    kld = torch.nn.KLDivLoss(reduction='none', log_target=True)
+    log_softmax = torch.nn.LogSoftmax(dim=1)
+    cfg = Experiment.get_config()
+    warmup = cfg.autoencoder.train.adv_warmup_epochs
+
+    def _adv_kld(out: Outputs, _: Targets) -> torch.Tensor:
+        loss = kld(log_softmax(out.adv_logits), out.logits).sum(1)
+        if warmup > 0:
+            scale = min(1.0, out.model_epoch / warmup)
+            loss = loss * scale
+        return loss
+
+    return Loss[Outputs, Targets](_adv_kld, name='Adv')
+
 def get_vae_loss() -> LossBase[Outputs, Targets]:
     """Get VAE loss composed with drytorch natural syntax."""
     cfg = Experiment.get_config()
     nll = get_nll_loss()
     kld = get_kld_loss()
     if cfg.autoencoder.train.annealing_period > 0:
-        return nll + kld * get_annealing()
+        loss = nll + kld * get_annealing()
+    else:
+        loss = nll + kld
 
-    return nll + kld
+    from src.config.options import Models
+    if cfg.autoencoder.model.name == Models.VAEX:
+        loss = loss + get_adversarial_loss()
+
+    return loss
 
 
 def get_classifier_loss() -> LossBase[torch.Tensor, Targets]:
@@ -139,3 +161,4 @@ def get_classifier_loss() -> LossBase[torch.Tensor, Targets]:
     loss = get_cross_entropy()
     loss.watch(get_accuracy())
     return loss
+
