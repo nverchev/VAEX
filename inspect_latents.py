@@ -138,8 +138,107 @@ def report() -> None:
     logging.info('')
     logging.info('linear probe on root d_mu -> label: %.3f accuracy', accuracy)
     logging.info('label balance: %.3f', float(labels.float().mean()))
-    confidence_residual(module, eval_loader, device, N_BATCHES)
+    split_class_content(module, eval_loader, device, N_BATCHES)
+    live_dimension_probe(module, eval_loader, device, N_BATCHES)
     per_stage_class_content(module, eval_loader, device, N_BATCHES)
+    return
+
+
+@torch.no_grad()
+def live_dimension_probe(module, loader, device, n_batches: int) -> None:
+    """Probe each stage for the class using only the dimensions that carry information.
+
+    A stage whose dimensions are mostly dead dilutes a probe over all of them, so a
+    localised signal - a beard occupying a few positions at a fine scale - can read as
+    chance. Restricting to dimensions above a KL floor asks whether the class is in the
+    part of the stage that is actually being used.
+    """
+    stage_mu: list[list[torch.Tensor]] = []
+    stage_kl: list[torch.Tensor] = []
+    labels: list[torch.Tensor] = []
+    n_seen = 0
+    for i, (inputs, targets) in enumerate(loader):
+        if i >= n_batches:
+            break
+
+        inputs = Inputs(*(tensor.to(device) for tensor in inputs))
+        out = module(inputs)
+        for stage, (d_mu, d_logvar, p_logvar) in enumerate(
+            zip(out.d_mu, out.d_logvar, out.prior_log_var, strict=True)
+        ):
+            kl = 0.5 * (-1 - d_logvar + d_logvar.exp() + d_mu**2 * torch.exp(-p_logvar))
+            if i == 0:
+                stage_mu.append([])
+                stage_kl.append(kl.sum(0).float().cpu())
+            else:
+                stage_kl[stage] += kl.sum(0).float().cpu()
+
+            stage_mu[stage].append(d_mu.float().cpu())
+
+        labels.append(targets.label.cpu())
+        n_seen += inputs.image.size(0)
+
+    y = torch.cat(labels)
+    base = float(max(y.float().mean(), 1 - y.float().mean()))
+    logging.info('')
+    logging.info('%5s %8s %8s %12s %12s  (base rate %.3f)', 'stage', 'dims', 'live', 'probe(all)', 'probe(live)', base)
+    for stage, parts in enumerate(stage_mu):
+        mu = torch.cat(parts)
+        kl = (stage_kl[stage] / n_seen).flatten()
+        live = (kl >= DEAD_KL).nonzero().flatten()
+        if live.numel() < 2:
+            logging.info('%5d %8d %8d %12.3f %12s', stage, kl.numel(), live.numel(), probe(mu, y), 'n/a')
+            continue
+
+        logging.info(
+            '%5d %8d %8d %12.3f %12.3f',
+            stage, kl.numel(), live.numel(), probe(mu, y), probe(mu[:, live], y)
+        )
+
+    return
+
+
+@torch.no_grad()
+def split_class_content(module, loader, device, n_batches: int) -> None:
+    """Report the conditioned and unconditioned halves of the root separately.
+
+    The adversary is meant to empty the free half of class information while the
+    conditioned half keeps it, so the two have to be read apart. The log-variance of the
+    free half is included because it is the one channel a mean-only adversary cannot see.
+    """
+    split = getattr(module, 'flat_z_cond_dim', 0)
+    if not split:
+        return
+
+    means: list[torch.Tensor] = []
+    offsets: list[torch.Tensor] = []
+    logvars: list[torch.Tensor] = []
+    labels: list[torch.Tensor] = []
+    for i, (inputs, targets) in enumerate(loader):
+        if i >= n_batches:
+            break
+
+        inputs = Inputs(*(tensor.to(device) for tensor in inputs))
+        out = module(inputs)
+        means.append((out.prior_mu[0] + out.d_mu[0]).float().cpu())
+        offsets.append(out.d_mu[0].float().cpu())
+        logvars.append(out.d_logvar[0].float().cpu())
+        labels.append(targets.label.cpu())
+
+    mu = torch.cat(means)
+    d_mu = torch.cat(offsets)
+    logvar = torch.cat(logvars)
+    y = torch.cat(labels)
+    halves = {'cond': slice(0, split), 'free': slice(split, mu.size(1))}
+    logging.info('')
+    logging.info('%6s %6s %10s %14s', 'half', 'dims', 'probe(mu)', '||delta d_mu||')
+    for name, part in halves.items():
+        delta = d_mu[y == 1][:, part].mean(0) - d_mu[y == 0][:, part].mean(0)
+        logging.info('%6s %6d %10.3f %14.3f', name, mu[:, part].size(1), probe(mu[:, part], y), float(delta.norm()))
+
+    logging.info('probe on free log-variance: %.3f  (base rate %.3f)',
+                 probe(logvar[:, halves['free']], y),
+                 float(max(y.float().mean(), 1 - y.float().mean())))
     return
 
 

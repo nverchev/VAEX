@@ -283,8 +283,10 @@ class BVAE(Abstract_VAE, abc.ABC):
     def _build_decoder_layers(self) -> None:
         self.root_prior_cond = LinearLayer(self.dim_target, 2 * self.flat_z_cond_dim, use_trunc_init=True)
         self.root_prior_free = nn.parameter.Parameter(torch.zeros(1, 2 * self.flat_z_free_dim))
+        # Both the mean and the log-variance of the free half, so that class information
+        # cannot sidestep the adversary by moving into the noise scale.
         self.information_eraser = InformationEraser(
-            in_dim=self.flat_z_free_dim,
+            in_dim=2 * self.flat_z_free_dim,
             n_classes=self.dim_target,
             reversal_strength=self.reversal_strength
         )
@@ -416,10 +418,10 @@ class BVAE(Abstract_VAE, abc.ABC):
                 posterior_weights[0] * out.d_logvar[0] + p_logvar,
                 temperature=self.sampling_variance[0],
             )
-            p_mu_free = p_mu[:, self.flat_z_cond_dim:]
-            d_mu_free = out.d_mu[0][:, self.flat_z_cond_dim:]
-            mu_free = p_mu_free + d_mu_free
-            out.adv_logits = self.information_eraser(mu_free)
+            free = slice(self.flat_z_cond_dim, None)
+            mu_free = p_mu[:, free] + out.d_mu[0][:, free]
+            logvar_free = p_logvar[:, free] + out.d_logvar[0][:, free]
+            out.adv_logits = self.information_eraser(torch.cat([mu_free, logvar_free], dim=1))
         else:
             z = self.sampling(p_mu, p_logvar, temperature=self.sampling_variance[0])
 
