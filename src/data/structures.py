@@ -33,7 +33,7 @@ class Outputs:
     recon: torch.Tensor = dataclasses.field(init=False)
     image: torch.Tensor = dataclasses.field(init=False)
     logits: torch.Tensor = dataclasses.field(init=False)
-    adv_logits: torch.Tensor = dataclasses.field(init=False)
+    adv_logits: list[torch.Tensor] = dataclasses.field(default_factory=list)
     d_mu: list[torch.Tensor] = dataclasses.field(default_factory=list)
     d_logvar: list[torch.Tensor] = dataclasses.field(default_factory=list)
     prior_mu: list[torch.Tensor] = dataclasses.field(default_factory=list)

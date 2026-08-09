@@ -131,7 +131,10 @@ def get_adversarial_loss() -> LossBase[Outputs, Targets]:
     warmup = cfg.autoencoder.train.adv_warmup_epochs
 
     def _adv_kld(out: Outputs, _: Targets) -> torch.Tensor:
-        loss = kld(log_softmax(out.adv_logits), out.logits).sum(1)
+        loss = torch.zeros((), device=out.logits.device)
+        for adv_logits in out.adv_logits:
+            loss = loss + kld(log_softmax(adv_logits), out.logits).sum(1)
+            
         if warmup > 0:
             scale = min(1.0, out.model_epoch / warmup)
             loss = loss * scale
