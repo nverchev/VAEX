@@ -118,6 +118,10 @@ class ObjectiveConfig:
             the one below. An intervention acts where the weight is low, so this leaves
             the root freest for the condition to rewrite and copies texture from the
             source. ``1.0`` keeps the whole posterior everywhere.
+        cond_posterior_weight: Weight on the conditioned half of the root posterior when
+            intervening, overriding the per-stage weight there. ``0.0`` takes the class
+            entirely from the condition while the free half keeps the identity, so the
+            cut falls only on what the intervention is meant to replace.
         cf_temperature: Sharpness of the condition a counterfactual is decoded with,
             relative to the uniform condition. ``1.0`` is the plain one-hot target class;
             below ``1.0`` pushes past it, amplifying the shift the root prior applies;
@@ -138,6 +142,7 @@ class ObjectiveConfig:
     sigma_2: float = 1.0
     posterior_weight_multiplier: float = 0.5
     cf_temperature: float = 1.0
+    cond_posterior_weight: float = 0.0
     sampling_temperature: float = 1.0
     sampling_variance: tuple[float, ...] = (0.0, 0.2, 0.4, 0.6, 0.8, 1.0)
     recalibrate_bn: bool = True

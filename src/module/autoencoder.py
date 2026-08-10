@@ -43,6 +43,7 @@ class Abstract_VAE(nn.Module, abc.ABC):
     z_free_dim: int
     z_cond_dim: int
     reversal_strength: float
+    cond_posterior_weight: float
 
     def __init__(self) -> None:
         super().__init__()
@@ -57,6 +58,7 @@ class Abstract_VAE(nn.Module, abc.ABC):
         self.z_free_dim = exp_cfg.autoencoder.model.z_free_dim
         self.z_cond_dim = exp_cfg.autoencoder.model.z_cond_dim
         self.reversal_strength = exp_cfg.autoencoder.objective.reversal_strength
+        self.cond_posterior_weight = exp_cfg.autoencoder.objective.cond_posterior_weight
         return
 
     @property
@@ -114,6 +116,7 @@ class Abstract_VAE(nn.Module, abc.ABC):
         out: Outputs,
         condition: torch.Tensor,
         posterior_weights: tuple[float, ...],
+        cond_weight: float | None = None,
     ) -> Outputs:
         """Decode latent space into reconstruction.
 
@@ -123,6 +126,10 @@ class Abstract_VAE(nn.Module, abc.ABC):
             posterior_weights: per-stage weight on the posterior offsets, one entry per
                 latent stage. ``1.0`` keeps the stage posterior, ``0.0`` falls back to
                 the stage prior.
+            cond_weight: weight on the conditioned half of the root posterior alone,
+                overriding ``posterior_weights[0]`` there. ``None`` weights both halves
+                alike, which is what reconstruction wants; ``0.0`` hands the class
+                entirely to the condition while the free half keeps the identity.
         """
 
     def forward(self, inputs: Inputs, **kwargs) -> Outputs:
@@ -165,7 +172,7 @@ class Abstract_VAE(nn.Module, abc.ABC):
         )
         cf_condition[:, target_dim] = uniform + (1.0 - uniform) / self.cf_temperature
         out = self.encode(x)
-        out = self.decode(out, cf_condition, posterior_weights)
+        out = self.decode(out, cf_condition, posterior_weights, cond_weight=self.cond_posterior_weight)
         out.image = x
         out.condition = cf_condition
         return out
@@ -405,6 +412,7 @@ class BVAE(Abstract_VAE, abc.ABC):
         out: Outputs,
         condition: torch.Tensor,
         posterior_weights: tuple[float, ...],
+        cond_weight: float | None = None,
     ) -> Outputs:
         out.prior_mu = []
         out.prior_log_var = []
@@ -413,9 +421,16 @@ class BVAE(Abstract_VAE, abc.ABC):
         p_logvar = soft_clamp(p_logvar, -PRIOR_LOGVAR_BOUND, PRIOR_LOGVAR_BOUND)
         posterior = bool(out.d_mu)
         if posterior:
+            # Intervening cuts the conditioned half alone: the free half carries identity,
+            # which the intervention has no reason to touch, so it keeps its posterior.
+            root_weight: float | torch.Tensor = posterior_weights[0]
+            if cond_weight is not None:
+                root_weight = out.d_mu[0].new_ones((1, out.d_mu[0].size(1)))
+                root_weight[:, : self.flat_z_cond_dim] = cond_weight
+
             z = self.sampling(
-                posterior_weights[0] * out.d_mu[0] + p_mu,
-                posterior_weights[0] * out.d_logvar[0] + p_logvar,
+                root_weight * out.d_mu[0] + p_mu,
+                root_weight * out.d_logvar[0] + p_logvar,
                 temperature=self.sampling_variance[0],
             )
             free = slice(self.flat_z_cond_dim, None)
