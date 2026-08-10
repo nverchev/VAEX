@@ -64,9 +64,6 @@ def train_vae(trial: Trial | None = None) -> None:
         register_checkpointing(trainer, user_cfg.checkpoint_every or 1)
 
     trainer.train_until(vae_cfg.train.n_epochs)
-    if trial is None:
-        trainer.save_checkpoint()
-
     test()
     if vae_cfg.objective.recalibrate_bn and isinstance(model, VAEEMAModel):
         generative = clone_for_generation(model)

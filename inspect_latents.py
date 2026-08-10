@@ -139,8 +139,90 @@ def report() -> None:
     logging.info('linear probe on root d_mu -> label: %.3f accuracy', accuracy)
     logging.info('label balance: %.3f', float(labels.float().mean()))
     split_class_content(module, eval_loader, device, N_BATCHES)
+    per_stage_split_probe(module, eval_loader, device, N_BATCHES)
     live_dimension_probe(module, eval_loader, device, N_BATCHES)
     per_stage_class_content(module, eval_loader, device, N_BATCHES)
+    return
+
+
+def cond_widths(module) -> list[int]:
+    """Flat width of the conditioned half at each stage, or 0 where the stage is not split.
+
+    Mirrors the construction in the decoder: a stage of `z_dim` channels gives `z_dim // 2`
+    to the conditioned half, and each channel occupies ``((res + 1) // 2) ** 2`` positions
+    once the stride-2 projection has been flattened.
+    """
+    widths = [getattr(module, 'flat_z_cond_dim', 0)]
+    z_dims = list(reversed(module.c_z_dims))
+    resolutions = list(reversed(module.resolutions))
+    for z_dim, res in zip(z_dims, resolutions, strict=True):
+        spatial = ((res + 1) // 2) ** 2
+        widths.append((z_dim // 2) * spatial if z_dim > 1 else 0)
+
+    return widths
+
+
+@torch.no_grad()
+def per_stage_split_probe(module, loader, device, n_batches: int) -> None:
+    """Probe the conditioned and free halves of every split stage.
+
+    With the split applied throughout, the adversary is meant to hold the free half at
+    chance at every level, not only at the root.
+    """
+    widths = cond_widths(module)
+    if not any(widths):
+        return
+
+    means: list[list[torch.Tensor]] = []
+    offsets: list[list[torch.Tensor]] = []
+    labels: list[torch.Tensor] = []
+    for i, (inputs, targets) in enumerate(loader):
+        if i >= n_batches:
+            break
+
+        inputs = Inputs(*(tensor.to(device) for tensor in inputs))
+        out = module(inputs)
+        for stage, (p_mu, d_mu) in enumerate(zip(out.prior_mu, out.d_mu, strict=True)):
+            if i == 0:
+                means.append([])
+                offsets.append([])
+
+            means[stage].append((p_mu + d_mu).float().cpu())
+            offsets[stage].append(d_mu.float().cpu())
+
+        labels.append(targets.label.cpu())
+
+    y = torch.cat(labels)
+    base = float(max(y.float().mean(), 1 - y.float().mean()))
+    logging.info('')
+    logging.info('mu = what the decoder reads; d = the residual an intervention keeps')
+    logging.info(
+        '%5s %7s %7s %9s %9s %9s %9s  (base rate %.3f)',
+        'stage', 'cond', 'free', 'mu cond', 'mu free', 'd cond', 'd free', base,
+    )
+    for stage, parts in enumerate(means):
+        mu = torch.cat(parts)
+        d_mu = torch.cat(offsets[stage])
+        split = widths[stage] if stage < len(widths) else 0
+        if not split or split >= mu.size(1):
+            # Not split: the stage is conditioned throughout, so it is all 'cond'.
+            logging.info(
+                '%5d %7d %7s %9.3f %9s %9.3f %9s',
+                stage, mu.size(1), '-', probe(mu, y), '-', probe(d_mu, y), '-',
+            )
+            continue
+
+        logging.info(
+            '%5d %7d %7d %9.3f %9.3f %9.3f %9.3f',
+            stage,
+            split,
+            mu.size(1) - split,
+            probe(mu[:, :split], y),
+            probe(mu[:, split:], y),
+            probe(d_mu[:, :split], y),
+            probe(d_mu[:, split:], y),
+        )
+
     return
 
 

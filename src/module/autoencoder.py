@@ -72,19 +72,17 @@ class Abstract_VAE(nn.Module, abc.ABC):
     def posterior_weights_from(self, multiplier: float) -> tuple[float, ...]:
         """Build per-stage posterior weights growing geometrically towards the pixels.
 
-        An intervention acts where the weight is low, since that is where the stage
-        prior, and through it the condition, takes over from the posterior. The finest
-        stage therefore keeps its whole posterior, so that pixel-level detail is copied
-        from the source, and each stage above it keeps `multiplier` times the weight of
-        the one below. The root is left with the least, which is what lets the condition
-        rewrite the semantics rather than the texture. ``1.0`` keeps the whole posterior
-        everywhere and ``0.0`` keeps it at the finest stage alone.
+        These weight the conditioned half of each stage only; the free half always keeps
+        its posterior, so identity is preserved without the schedule having to protect it.
+        Every stage is cut, the finest least and the root most, which is what lets the
+        condition rewrite the semantics while the texture still follows the source.
+        ``1.0`` keeps the whole posterior everywhere and ``0.0`` removes the conditioned
+        half entirely.
 
         Args:
             multiplier: ratio between the weights of consecutive stages.
         """
-        last = len(self.z_dims) - 1
-        return tuple(multiplier ** (last - level) for level in range(len(self.z_dims)))
+        return tuple(multiplier ** (len(self.z_dims) - level) for level in range(len(self.z_dims)))
 
     @property
     @abc.abstractmethod
@@ -154,6 +152,7 @@ class Abstract_VAE(nn.Module, abc.ABC):
 
         if posterior_weights is None:
             posterior_weights = self.posterior_weights
+            posterior_weights = tuple((*posterior_weights[:-1], 100.0))
 
         x = inputs.image
         # Read out from the uniform condition towards the target class. The root prior is
@@ -187,6 +186,23 @@ class Abstract_VAE(nn.Module, abc.ABC):
         return self.decode(
             out, condition.to(next(self.parameters()).device), self.full_posterior_weights
         ).recon
+
+    @staticmethod
+    def _half_weight(reference: torch.Tensor, cond_width: int, weight: float) -> torch.Tensor:
+        """Weight the conditioned half of a stage and leave the free half at one.
+
+        An intervention replaces the class and keeps the identity, so the per-stage weight
+        belongs on the conditioned half alone. A weight of one gives the identity, which
+        is what reconstruction passes, so the training path is unaffected.
+
+        Args:
+            reference: the stage offset, used for width, dtype and device.
+            cond_width: flat width of the conditioned half.
+            weight: weight to apply there.
+        """
+        half = reference.new_ones((1, reference.size(1)))
+        half[:, :cond_width] = weight
+        return half
 
     def sampling(self, mu: torch.Tensor, log_var: torch.Tensor, temperature: float = 1.0) -> torch.Tensor:
         std = torch.exp(0.5 * log_var)
@@ -448,9 +464,10 @@ class BVAE(Abstract_VAE, abc.ABC):
         p_logvar = soft_clamp(p_logvar, -PRIOR_LOGVAR_BOUND, PRIOR_LOGVAR_BOUND)
         posterior = bool(out.d_mu)
         if posterior:
+            root_weight = self._half_weight(out.d_mu[0], self.flat_z_cond_dim, posterior_weights[0])
             z = self.sampling(
-                posterior_weights[0] * out.d_mu[0] + p_mu,
-                posterior_weights[0] * out.d_logvar[0] + p_logvar,
+                root_weight * out.d_mu[0] + p_mu,
+                root_weight * out.d_logvar[0] + p_logvar,
                 temperature=self.sampling_variance[0],
             )
             free = slice(self.flat_z_cond_dim, None)
@@ -501,14 +518,15 @@ class BVAE(Abstract_VAE, abc.ABC):
                         h = merge(torch.cat([x, h], dim=1))
                         d_mu, d_logvar = inference(h, condition=stage_condition)
                         d_logvar = soft_clamp(d_logvar, -POSTERIOR_LOGVAR_BOUND, POSTERIOR_LOGVAR_BOUND)
+                        stage_weight = self._half_weight(d_mu, p_mu_cond.size(1), posterior_weights[level])
                         z = self.sampling(
-                            posterior_weights[level] * d_mu + p_mu,
-                            posterior_weights[level] * d_logvar + p_logvar,
+                            stage_weight * d_mu + p_mu,
+                            stage_weight * d_logvar + p_logvar,
                             temperature=temperature,
                         )
                         out.d_mu.append(d_mu)
                         out.d_logvar.append(d_logvar)
-                        
+
                         free_slice = slice(p_mu_cond.size(1), None)
                         mu_free = p_mu[:, free_slice] + d_mu[:, free_slice]
                         logvar_free = p_logvar[:, free_slice] + d_logvar[:, free_slice]

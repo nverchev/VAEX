@@ -18,7 +18,7 @@ from src.train.models import ClassifierModel, load_extract_generative_module
 
 # Lowest posterior weight ratio worth rendering: below it the counterfactual degrades
 # faster than it gains, so the grid spans the usable range rather than the whole one.
-MIN_RATIO = 0.7
+MIN_RATIO = 0.
 
 
 def format_probs(probs: np.ndarray, class_names: list[str]) -> str:
