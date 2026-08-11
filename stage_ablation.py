@@ -15,6 +15,22 @@ from src.train.models import load_extract_classifier_module, load_extract_genera
 
 N_BATCHES = 16
 
+# Aligned CelebA puts the face in a consistent central ellipse, so everything outside it
+# is context the intervention has no business changing. Semi-axes as image fractions.
+FACE_CENTRE = (0.48, 0.50)
+FACE_AXES = (0.42, 0.32)
+
+
+def outside_face(size: int, device: torch.device) -> torch.Tensor:
+    """Boolean mask selecting the region a counterfactual should leave alone."""
+    rows = torch.linspace(0.0, 1.0, size, device=device)[:, None]
+    cols = torch.linspace(0.0, 1.0, size, device=device)[None, :]
+    inside = (
+        ((rows - FACE_CENTRE[0]) / FACE_AXES[0]) ** 2
+        + ((cols - FACE_CENTRE[1]) / FACE_AXES[1]) ** 2
+    ) <= 1.0
+    return ~inside
+
 
 @torch.inference_mode()
 def run() -> None:
@@ -40,6 +56,8 @@ def run() -> None:
     conditions['graded'] = list(module.posterior_weights)
 
     totals = {name: 0.0 for name in conditions}
+    context = {name: 0.0 for name in conditions}
+    face = {name: 0.0 for name in conditions}
     n_seen = 0
     for i, (inputs, targets) in enumerate(loader):
         if i >= N_BATCHES:
@@ -48,25 +66,37 @@ def run() -> None:
         inputs = Inputs(*(tensor.to(device) for tensor in inputs))
         label = targets.label.to(device)
         flipped = 1 - label
+        recon = module(inputs).recon
+        mask = outside_face(recon.size(-1), device)
         for name, weights in conditions.items():
             probs = []
+            recons = []
             for target_dim in range(module.dim_target):
                 out = module.generate_counterfactual(
                     inputs, target_dim=target_dim, posterior_weights=tuple(weights)
                 )
+                recons.append(out.recon)
                 probs.append(torch.softmax(classifier(Inputs(image=out.recon)), dim=1))
 
             stacked = torch.stack(probs)  # (target, batch, class)
             chosen = stacked[flipped, torch.arange(label.numel(), device=device)]
             totals[name] += float(chosen.gather(1, flipped[:, None]).sum())
+            images = torch.stack(recons)[flipped, torch.arange(label.numel(), device=device)]
+            drift = (images - recon) ** 2
+            context[name] += float(drift[:, :, mask].mean(dim=(1, 2)).sum())
+            face[name] += float(drift[:, :, ~mask].mean(dim=(1, 2)).sum())
 
         n_seen += label.numel()
 
-    logging.info('flip target probability over %d samples (higher = stronger counterfactual)', n_seen)
-    baseline = totals['baseline'] / n_seen
-    for name, total in totals.items():
-        mean = total / n_seen
-        logging.info('%-16s %.4f   %+.4f', name, mean, mean - baseline)
+    logging.info('over %d samples: flip = P(target); drift = MSE vs reconstruction', n_seen)
+    logging.info('%-16s %8s %12s %12s %10s', '', 'flip', 'face drift', 'context', 'ratio')
+    for name in conditions:
+        flip = totals[name] / n_seen
+        ctx = context[name] / n_seen
+        fac = face[name] / n_seen
+        logging.info(
+            '%-16s %8.4f %12.5f %12.5f %10.2f', name, flip, fac, ctx, fac / max(ctx, 1e-9)
+        )
 
     return
 

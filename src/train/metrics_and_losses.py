@@ -94,7 +94,7 @@ class KLDLoss:
 def get_kld_loss() -> DictLoss[Outputs, Targets]:
     """Get KL divergence loss component (free bits floor per latent stage)."""
     cfg = Experiment.get_config()
-    return DictLoss[Outputs, Targets](KLDLoss(freebits=cfg.autoencoder.model.freebits), name='KLD_FB')
+    return DictLoss[Outputs, Targets](KLDLoss(freebits=cfg.autoencoder.objective.freebits), name='KLD_FB')
 
 
 def get_annealing() -> Loss[Outputs, Targets]:

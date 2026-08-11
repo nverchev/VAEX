@@ -39,7 +39,7 @@ class Abstract_VAE(nn.Module, abc.ABC):
     z_dims: tuple[int, ...]
     sampling_variance: tuple[float, ...]
     posterior_weight_multiplier: float
-    cf_temperature: float
+    cf_strength: float
     z_free_dim: int
     z_cond_dim: int
     reversal_strength: float
@@ -53,7 +53,7 @@ class Abstract_VAE(nn.Module, abc.ABC):
         self.z_dims = exp_cfg.autoencoder.model.z_dims
         self.sampling_variance = exp_cfg.autoencoder.objective.sampling_variance
         self.posterior_weight_multiplier = exp_cfg.autoencoder.objective.posterior_weight_multiplier
-        self.cf_temperature = exp_cfg.autoencoder.objective.cf_temperature
+        self.cf_strength = exp_cfg.autoencoder.objective.cf_strength
         self.z_free_dim = exp_cfg.autoencoder.model.z_free_dim
         self.z_cond_dim = exp_cfg.autoencoder.model.z_cond_dim
         self.reversal_strength = exp_cfg.autoencoder.objective.reversal_strength
@@ -155,14 +155,10 @@ class Abstract_VAE(nn.Module, abc.ABC):
             posterior_weights = tuple((*posterior_weights[:-1], 100.0))
 
         x = inputs.image
-        # Read out from the uniform condition towards the target class. The root prior is
-        # linear in the condition, so a temperature below one carries it past the one-hot
-        # and scales up the shift the intervention applies.
-        uniform = 1.0 / self.dim_target
-        cf_condition = torch.full(
-            (x.size(0), self.dim_target), uniform - uniform / self.cf_temperature, device=x.device, dtype=x.dtype
-        )
-        cf_condition[:, target_dim] = uniform + (1.0 - uniform) / self.cf_temperature
+        orig_condition = self.condition_from(inputs)
+        target = torch.zeros((x.size(0), self.dim_target), device=x.device, dtype=x.dtype)
+        target[:, target_dim] = 1.0
+        cf_condition = (1.0 - self.cf_strength) * orig_condition + self.cf_strength * target
         out = self.encode(x)
         out = self.decode(out, cf_condition, posterior_weights)
         out.image = x

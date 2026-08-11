@@ -109,37 +109,20 @@ class ObjectiveConfig:
     """Specification for Autoencoder / VAE loss objective and metrics parameters.
 
     Attributes:
-        sigma_2: Variance of the Gaussian NLL reconstruction loss, given directly rather
-            than as a standard deviation. It sets the weight of reconstruction against the
-            KL: the reconstruction term scales as ``1 / sigma_2``.
-        posterior_weight_multiplier: Ratio between the posterior weights of consecutive
-            latent stages, growing towards the pixels: the finest stage keeps its whole
-            posterior and each stage above it keeps ``multiplier`` times the weight of
-            the one below. An intervention acts where the weight is low, so this leaves
-            the root freest for the condition to rewrite and copies texture from the
-            source. ``1.0`` keeps the whole posterior everywhere.
-        cf_temperature: Sharpness of the condition a counterfactual is decoded with,
-            relative to the uniform condition. ``1.0`` is the plain one-hot target class;
-            below ``1.0`` pushes past it, amplifying the shift the root prior applies;
-            above ``1.0`` softens it back towards uniform.
-        sampling_temperature: Temperature scaling for latent noise during generation.
-            1.0 uses full learned variance; lower values reduce diversity.
-        sampling_variance: Per-stage multiplier on the sampling standard deviation,
-            applied at inference only. ``0.0`` decodes the posterior mean; ``1.0`` draws
-            with the full learned scale. Note this scales sigma, so the variance moves
-            with its square.
-        recalibrate_bn: Whether to re-estimate the BatchNorm running statistics on the
-            decoding path the posterior weights define, once training is over, and save
-            the result as a separate model. The trained checkpoint is left untouched, so
-            both stay loadable.
+        sigma_2: Variance of the Gaussian NLL reconstruction loss.
+        posterior_weight_multiplier: Ratio between the posterior weights of consecutive latent stages.
+        cf_strength: Interpolation weight from original condition (0.0) to one-hot target class (1.0).
+        sampling_variance: Per-stage multiplier on the sampling standard deviation at inference.
+        freebits: Free-bits floor per latent stage.
+        recalibrate_bn: Whether to re-estimate BatchNorm running statistics after training.
         reversal_strength: Multiplier for the gradient reversed in the InformationEraser layer.
     """
 
     sigma_2: float = 1.0
     posterior_weight_multiplier: float = 0.5
-    cf_temperature: float = 1.0
-    sampling_temperature: float = 1.0
+    cf_strength: float = 1.0
     sampling_variance: tuple[float, ...] = (0.0, 0.2, 0.4, 0.6, 0.8, 1.0)
+    freebits: tuple[float, ...] = (0.5, 0.25, 0.125, 0.0625, 0.03125, 0.0)
     recalibrate_bn: bool = True
     reversal_strength: float = 0.5
 
@@ -152,10 +135,9 @@ class ModelConfig:
     Attributes:
         name: Model architecture variant to instantiate.
         architecture: VAEArchitectureConfig
-        z_dims: Per-stage latent dimensions; must match freebits in length.
+        z_dims: Per-stage latent dimensions; must match objective.freebits in length.
         z_free_dim: Dimension of the unconditioned root latent space.
         z_cond_dim: Dimension of the conditioned root latent space.
-        freebits: Free-bits floor per latent stage.
         ema_decay: Exponential moving average decay rate for model weights.
         temperature: Temperature scaling factor for logits in conditional models (e.g. VAEX).
     """
@@ -165,17 +147,8 @@ class ModelConfig:
     z_dims: tuple[StrictlyPositiveInt, ...] = (1, 2, 4, 8, 16, 32)
     z_free_dim: int = 16
     z_cond_dim: int = 16
-    freebits: tuple[float, ...] = (0.5, 0.25, 0.125, 0.0625, 0.03125, 0.0)
     ema_decay: float = 0.999
     temperature: float = 5.0
-
-    @model_validator(mode='after')
-    def _check_freebits_matches_z_dims(self) -> Self:
-        if len(self.freebits) != len(self.z_dims):
-            msg = 'freebits (len {}) must match z_dims (len {}) in length.'
-            raise ValueError(msg.format(len(self.freebits), len(self.z_dims)))
-
-        return self
 
     @model_validator(mode='after')
     def _check_z1_dim_matches(self) -> Self:
@@ -376,6 +349,10 @@ class AutoencoderExperimentConfig(BaseExperimentConfig):
         if len(self.objective.sampling_variance) != len(self.model.z_dims):
             msg = 'sampling_variance (len {}) in objective must match z_dims (len {}) in model.'
             raise ValueError(msg.format(len(self.objective.sampling_variance), len(self.model.z_dims)))
+
+        if len(self.objective.freebits) != len(self.model.z_dims):
+            msg = 'freebits (len {}) in objective must match z_dims (len {}) in model.'
+            raise ValueError(msg.format(len(self.objective.freebits), len(self.model.z_dims)))
 
         return self
 
