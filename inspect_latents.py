@@ -157,7 +157,7 @@ def cond_widths(module) -> list[int]:
     resolutions = list(reversed(module.resolutions))
     for z_dim, res in zip(z_dims, resolutions, strict=True):
         spatial = ((res + 1) // 2) ** 2
-        widths.append((z_dim // 2) * spatial if z_dim > 1 else 0)
+        widths.append(max(0, min(module.z_cond_dim, z_dim - 1)) * spatial)
 
     return widths
 

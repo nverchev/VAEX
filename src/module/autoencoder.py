@@ -40,7 +40,6 @@ class Abstract_VAE(nn.Module, abc.ABC):
     sampling_variance: tuple[float, ...]
     posterior_weight_multiplier: float
     cf_strength: float
-    z_free_dim: int
     z_cond_dim: int
     reversal_strength: float
 
@@ -54,7 +53,6 @@ class Abstract_VAE(nn.Module, abc.ABC):
         self.sampling_variance = exp_cfg.autoencoder.objective.sampling_variance
         self.posterior_weight_multiplier = exp_cfg.autoencoder.objective.posterior_weight_multiplier
         self.cf_strength = exp_cfg.autoencoder.objective.cf_strength
-        self.z_free_dim = exp_cfg.autoencoder.model.z_free_dim
         self.z_cond_dim = exp_cfg.autoencoder.model.z_cond_dim
         self.reversal_strength = exp_cfg.autoencoder.objective.reversal_strength
         return
@@ -260,7 +258,7 @@ class BVAE(Abstract_VAE, abc.ABC):
     @property
     def flat_z_free_dim(self) -> int:
         """Flat width of the unconditioned root latent."""
-        return self.z_free_dim * ((self.final_res + 1) // 2) ** 2
+        return self.flat_z_dim - self.flat_z_cond_dim
 
     @property
     def flat_z_cond_dim(self) -> int:
@@ -345,32 +343,22 @@ class BVAE(Abstract_VAE, abc.ABC):
                 else:
                     inference = ToLatentConvADAIN(h_out, z_dim, res, cond_dim=self.dim_target)
                 
-                if z_dim > 1:
-                    z_cond_dim_stage = z_dim // 2
-                    z_free_dim_stage = z_dim - z_cond_dim_stage
-                    if self.inference_block == InferenceBlock.Mobile:
-                        generate_cond = ToLatentConvMobile(h_out, z_cond_dim_stage, res, aux_dim, cond_dim=self.dim_target)
-                        generate_free = ToLatentConvMobile(h_out, z_free_dim_stage, res, aux_dim, cond_dim=0)
-                    else:
-                        generate_cond = ToLatentConvADAIN(h_out, z_cond_dim_stage, res, aux_dim, cond_dim=self.dim_target)
-                        generate_free = ToLatentConvADAIN(h_out, z_free_dim_stage, res, aux_dim, cond_dim=0)
-                    
-                    flat_z_free_stage = z_free_dim_stage * (((res + 1) // 2) ** 2)
-                    in_dim = 2 * flat_z_free_stage
-                    intermediate_dim = min(512, max(16, 512000 // in_dim)) if in_dim > 0 else 512
-                    eraser = InformationEraser(
-                        in_dim=in_dim,
-                        n_classes=self.dim_target,
-                        reversal_strength=self.reversal_strength,
-                        intermediate_dim=intermediate_dim
-                    )
-                else:
-                    if self.inference_block == InferenceBlock.Mobile:
-                        generate_cond = ToLatentConvMobile(h_out, z_dim, res, aux_dim, cond_dim=self.dim_target)
-                    else:
-                        generate_cond = ToLatentConvADAIN(h_out, z_dim, res, aux_dim, cond_dim=self.dim_target)
-                    generate_free = NullOp()
-                    eraser = NullOp()
+                z_cond_dim_stage = max(0, min(self.z_cond_dim, z_dim - 1))
+                z_free_dim_stage = z_dim - z_cond_dim_stage
+                block = ToLatentConvMobile if self.inference_block == InferenceBlock.Mobile else ToLatentConvADAIN
+                generate_cond = (
+                    block(h_out, z_cond_dim_stage, res, aux_dim, cond_dim=self.dim_target)
+                    if z_cond_dim_stage
+                    else NullOp()
+                )
+                generate_free = block(h_out, z_free_dim_stage, res, aux_dim, cond_dim=0)
+                in_dim = 2 * z_free_dim_stage * (((res + 1) // 2) ** 2)
+                eraser = InformationEraser(
+                    in_dim=in_dim,
+                    n_classes=self.dim_target,
+                    reversal_strength=self.reversal_strength,
+                    intermediate_dim=min(512, max(16, 512000 // in_dim)),
+                )
 
                 merge = ConvBlock(2 * h_out, h_out)
                 self.inference_list.append(inference)
@@ -488,47 +476,37 @@ class BVAE(Abstract_VAE, abc.ABC):
 
             if not isinstance(from_latent, NullOp):
                 temperature = self.sampling_variance[level]
-                if isinstance(generate_free, NullOp):
-                    p_mu, p_logvar = generate_cond(x, z, stage_condition)
-                    p_logvar = soft_clamp(p_logvar, -PRIOR_LOGVAR_BOUND, PRIOR_LOGVAR_BOUND)
-                    if h is not None:
-                        h = merge(torch.cat([x, h], dim=1))
-                        d_mu, d_logvar = inference(h, condition=stage_condition)
-                        d_logvar = soft_clamp(d_logvar, -POSTERIOR_LOGVAR_BOUND, POSTERIOR_LOGVAR_BOUND)
-                        z = self.sampling(
-                            posterior_weights[level] * d_mu + p_mu,
-                            posterior_weights[level] * d_logvar + p_logvar,
-                            temperature=temperature,
-                        )
-                        out.d_mu.append(d_mu)
-                        out.d_logvar.append(d_logvar)
-                    else:
-                        z = self.sampling(p_mu, p_logvar, temperature=temperature)
-                else:
+                cond_width = 0
+                mu_parts, logvar_parts = [], []
+                if not isinstance(generate_cond, NullOp):
                     p_mu_cond, p_logvar_cond = generate_cond(x, z, stage_condition)
-                    p_mu_free, p_logvar_free = generate_free(x, z, None)
-                    p_mu = torch.cat([p_mu_cond, p_mu_free], dim=1)
-                    p_logvar = torch.cat([p_logvar_cond, p_logvar_free], dim=1)
-                    p_logvar = soft_clamp(p_logvar, -PRIOR_LOGVAR_BOUND, PRIOR_LOGVAR_BOUND)
-                    if h is not None:
-                        h = merge(torch.cat([x, h], dim=1))
-                        d_mu, d_logvar = inference(h, condition=stage_condition)
-                        d_logvar = soft_clamp(d_logvar, -POSTERIOR_LOGVAR_BOUND, POSTERIOR_LOGVAR_BOUND)
-                        stage_weight = self._half_weight(d_mu, p_mu_cond.size(1), posterior_weights[level])
-                        z = self.sampling(
-                            stage_weight * d_mu + p_mu,
-                            stage_weight * d_logvar + p_logvar,
-                            temperature=temperature,
-                        )
-                        out.d_mu.append(d_mu)
-                        out.d_logvar.append(d_logvar)
+                    cond_width = p_mu_cond.size(1)
+                    mu_parts.append(p_mu_cond)
+                    logvar_parts.append(p_logvar_cond)
 
-                        free_slice = slice(p_mu_cond.size(1), None)
-                        mu_free = p_mu[:, free_slice] + d_mu[:, free_slice]
-                        logvar_free = p_logvar[:, free_slice] + d_logvar[:, free_slice]
-                        out.adv_logits.append(eraser(torch.cat([mu_free, logvar_free], dim=1)))
-                    else:
-                        z = self.sampling(p_mu, p_logvar, temperature=temperature)
+                p_mu_free, p_logvar_free = generate_free(x, z, None)
+                mu_parts.append(p_mu_free)
+                logvar_parts.append(p_logvar_free)
+                p_mu = torch.cat(mu_parts, dim=1)
+                p_logvar = soft_clamp(torch.cat(logvar_parts, dim=1), -PRIOR_LOGVAR_BOUND, PRIOR_LOGVAR_BOUND)
+                if h is not None:
+                    h = merge(torch.cat([x, h], dim=1))
+                    d_mu, d_logvar = inference(h, condition=stage_condition)
+                    d_logvar = soft_clamp(d_logvar, -POSTERIOR_LOGVAR_BOUND, POSTERIOR_LOGVAR_BOUND)
+                    stage_weight = self._half_weight(d_mu, cond_width, posterior_weights[level])
+                    z = self.sampling(
+                        stage_weight * d_mu + p_mu,
+                        stage_weight * d_logvar + p_logvar,
+                        temperature=temperature,
+                    )
+                    out.d_mu.append(d_mu)
+                    out.d_logvar.append(d_logvar)
+                    free_slice = slice(cond_width, None)
+                    mu_free = p_mu[:, free_slice] + d_mu[:, free_slice]
+                    logvar_free = p_logvar[:, free_slice] + d_logvar[:, free_slice]
+                    out.adv_logits.append(eraser(torch.cat([mu_free, logvar_free], dim=1)))
+                else:
+                    z = self.sampling(p_mu, p_logvar, temperature=temperature)
 
                 x = from_latent(z, x)
                 out.prior_mu.append(p_mu)

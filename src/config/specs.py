@@ -136,8 +136,7 @@ class ModelConfig:
         name: Model architecture variant to instantiate.
         architecture: VAEArchitectureConfig
         z_dims: Per-stage latent dimensions; must match objective.freebits in length.
-        z_free_dim: Dimension of the unconditioned root latent space.
-        z_cond_dim: Dimension of the conditioned root latent space.
+        z_cond_dim: Conditioned channels per latent stage; the rest of the stage is free.
         ema_decay: Exponential moving average decay rate for model weights.
         temperature: Temperature scaling factor for logits in conditional models (e.g. VAEX).
     """
@@ -145,16 +144,15 @@ class ModelConfig:
     name: Models = Models.VAEX
     architecture: VAEArchitectureConfig = dataclasses.field(default_factory=VAEArchitectureConfig)
     z_dims: tuple[StrictlyPositiveInt, ...] = (1, 2, 4, 8, 16, 32)
-    z_free_dim: int = 16
-    z_cond_dim: int = 16
+    z_cond_dim: PositiveInt = 1
     ema_decay: float = 0.999
     temperature: float = 5.0
 
     @model_validator(mode='after')
-    def _check_z1_dim_matches(self) -> Self:
-        if self.z_dims[-1] != self.z_free_dim + self.z_cond_dim:
-            msg = 'z1 (z_dims[-1] = {}) must equal z_free_dim ({}) + z_cond_dim ({}).'
-            raise ValueError(msg.format(self.z_dims[-1], self.z_free_dim, self.z_cond_dim))
+    def _check_root_keeps_a_free_part(self) -> Self:
+        if self.z_cond_dim >= self.z_dims[-1]:
+            msg = 'z_cond_dim ({}) must be smaller than the root z_dims[-1] ({}).'
+            raise ValueError(msg.format(self.z_cond_dim, self.z_dims[-1]))
 
         return self
 
