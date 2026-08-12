@@ -13,6 +13,7 @@ from src.config.experiment import Experiment
 from src.data.structures import Inputs, Outputs
 from src.module.autoencoder import get_autoencoder, Abstract_VAE
 from src.module.classifier import BaseClassifier, get_classifier
+from src.module.layers import InformationEraser
 from drytorch.core import exceptions as dry_exc
 
 GENERATIVE_SUFFIX = '_bn'
@@ -21,9 +22,20 @@ ClassifierModel = Model[Inputs, torch.Tensor]
 
 
 class LogEpochMixin(p.ModelProtocol[Inputs, Outputs]):
-    """Mixin that stamps the current training epoch into every forward-pass output."""
+    """Mixin that stamps the current training epoch into every forward-pass output.
+
+    The adversarial warm-up rides on the reversal multiplier rather than on the loss, so
+    the erasers train at full strength from the first epoch while the reversed gradient
+    reaching the encoder ramps up.
+    """
 
     def __call__(self, inputs: Inputs) -> Outputs:
+        warmup = Experiment.get_config().autoencoder.train.adv_warmup_epochs
+        scale = min(1.0, self.epoch / warmup) if warmup > 0 else 1.0
+        for eraser in self.module.modules():
+            if isinstance(eraser, InformationEraser):
+                eraser.warmup_scale = scale
+
         out = super().__call__(inputs)
         out.model_epoch = self.epoch
         return out

@@ -756,6 +756,7 @@ class InformationEraser(nn.Module):
         self.intermediate_dim: int = intermediate_dim
         self.n_classes: int = n_classes
         self.reversal_strength = reversal_strength
+        self.warmup_scale = 1.0
         self.mlp = nn.Sequential(
             LinearLayer(self.in_dim, self.intermediate_dim, act_cls=nn.ReLU),
             LinearLayer(self.intermediate_dim, self.n_classes),
@@ -764,5 +765,5 @@ class InformationEraser(nn.Module):
 
     def forward(self, features: torch.Tensor) -> torch.Tensor:
         """Forward pass."""
-        reversed_features = GradReverse.apply(features, self.reversal_strength)
+        reversed_features = GradReverse.apply(features, self.reversal_strength * self.warmup_scale)
         return self.mlp(reversed_features)

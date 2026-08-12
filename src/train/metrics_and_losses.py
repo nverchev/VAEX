@@ -127,17 +127,12 @@ def get_adversarial_loss() -> LossBase[Outputs, Targets]:
     """Get adversarial loss to erase classifier info."""
     kld = torch.nn.KLDivLoss(reduction='none', log_target=True)
     log_softmax = torch.nn.LogSoftmax(dim=1)
-    cfg = Experiment.get_config()
-    warmup = cfg.autoencoder.train.adv_warmup_epochs
 
     def _adv_kld(out: Outputs, _: Targets) -> torch.Tensor:
         loss = torch.zeros((), device=out.logits.device)
         for adv_logits in out.adv_logits:
             loss = loss + kld(log_softmax(adv_logits), out.logits).sum(1)
-            
-        if warmup > 0:
-            scale = min(1.0, out.model_epoch / warmup)
-            loss = loss * scale
+
         return loss
 
     return Loss[Outputs, Targets](_adv_kld, name='Adv')
