@@ -15,10 +15,10 @@ from src.train.models import load_extract_classifier_module, load_extract_genera
 
 N_BATCHES = 16
 
-# Aligned CelebA puts the face in a consistent central ellipse, so everything outside it
-# is context the intervention has no business changing. Semi-axes as image fractions.
 FACE_CENTRE = (0.48, 0.50)
+"""Centre of the face ellipse in aligned CelebA, as fractions of the image."""
 FACE_AXES = (0.42, 0.32)
+"""Semi-axes of the face ellipse, as fractions of the image."""
 
 
 def outside_face(size: int, device: torch.device) -> torch.Tensor:
@@ -40,7 +40,6 @@ def run() -> None:
     device = next(module.parameters()).device
     _, loader = get_loaders(cfg.autoencoder.train.batch_size_per_device, classifier=classifier)
 
-    # Start from the full posterior so each stage is removed from the same footing.
     base = [1.0] * len(module.z_dims)
     n = len(base)
     conditions: dict[str, list[float]] = {'baseline': list(base)}
@@ -49,7 +48,6 @@ def run() -> None:
         zeroed[stage] = 0.0
         conditions[f'stage {stage} -> 0'] = zeroed
 
-    # All conditioned halves cut together, which is what the split makes affordable.
     for level in (0.75, 0.5, 0.25, 0.0):
         conditions[f'all cond -> {level}'] = [level] * n
 

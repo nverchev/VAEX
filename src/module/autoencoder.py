@@ -27,7 +27,9 @@ from src.module.layers import (
 
 
 PRIOR_LOGVAR_BOUND = 2.0
+"""Symmetric soft bound on the log-variance from the top-down prior."""
 POSTERIOR_LOGVAR_BOUND = 4.0
+"""Symmetric soft bound on the log-variance from the inference path."""
 
 
 class Abstract_VAE(nn.Module, abc.ABC):
@@ -343,7 +345,7 @@ class BVAE(Abstract_VAE, abc.ABC):
                 else:
                     inference = ToLatentConvADAIN(h_out, z_dim, res, cond_dim=self.dim_target)
                 
-                z_cond_dim_stage = max(0, min(self.z_cond_dim, z_dim - 1))
+                z_cond_dim_stage = min((z_dim + 1) // 2, self.z_cond_dim)
                 z_free_dim_stage = z_dim - z_cond_dim_stage
                 block = ToLatentConvMobile if self.inference_block == InferenceBlock.Mobile else ToLatentConvADAIN
                 generate_cond = (
@@ -351,13 +353,21 @@ class BVAE(Abstract_VAE, abc.ABC):
                     if z_cond_dim_stage
                     else NullOp()
                 )
-                generate_free = block(h_out, z_free_dim_stage, res, aux_dim, cond_dim=0)
+                generate_free = (
+                    block(h_out, z_free_dim_stage, res, aux_dim, cond_dim=0)
+                    if z_free_dim_stage
+                    else NullOp()
+                )
                 in_dim = 2 * z_free_dim_stage * (((res + 1) // 2) ** 2)
-                eraser = InformationEraser(
-                    in_dim=in_dim,
-                    n_classes=self.dim_target,
-                    reversal_strength=self.reversal_strength,
-                    intermediate_dim=min(512, max(16, 512000 // in_dim)),
+                eraser = (
+                    InformationEraser(
+                        in_dim=in_dim,
+                        n_classes=self.dim_target,
+                        reversal_strength=self.reversal_strength,
+                        intermediate_dim=min(512, max(16, 512000 // in_dim)),
+                    )
+                    if in_dim
+                    else NullOp()
                 )
 
                 merge = ConvBlock(2 * h_out, h_out)
@@ -448,6 +458,7 @@ class BVAE(Abstract_VAE, abc.ABC):
         p_logvar = soft_clamp(p_logvar, -PRIOR_LOGVAR_BOUND, PRIOR_LOGVAR_BOUND)
         posterior = bool(out.d_mu)
         if posterior:
+            # p_mu + d_mu = mu, p_logvar + d_logvar = logvar
             root_weight = self._half_weight(out.d_mu[0], self.flat_z_cond_dim, posterior_weights[0])
             z = self.sampling(
                 root_weight * out.d_mu[0] + p_mu,
@@ -484,9 +495,11 @@ class BVAE(Abstract_VAE, abc.ABC):
                     mu_parts.append(p_mu_cond)
                     logvar_parts.append(p_logvar_cond)
 
-                p_mu_free, p_logvar_free = generate_free(x, z, None)
-                mu_parts.append(p_mu_free)
-                logvar_parts.append(p_logvar_free)
+                if not isinstance(generate_free, NullOp):
+                    p_mu_free, p_logvar_free = generate_free(x, z, None)
+                    mu_parts.append(p_mu_free)
+                    logvar_parts.append(p_logvar_free)
+
                 p_mu = torch.cat(mu_parts, dim=1)
                 p_logvar = soft_clamp(torch.cat(logvar_parts, dim=1), -PRIOR_LOGVAR_BOUND, PRIOR_LOGVAR_BOUND)
                 if h is not None:
@@ -501,10 +514,11 @@ class BVAE(Abstract_VAE, abc.ABC):
                     )
                     out.d_mu.append(d_mu)
                     out.d_logvar.append(d_logvar)
-                    free_slice = slice(cond_width, None)
-                    mu_free = p_mu[:, free_slice] + d_mu[:, free_slice]
-                    logvar_free = p_logvar[:, free_slice] + d_logvar[:, free_slice]
-                    out.adv_logits.append(eraser(torch.cat([mu_free, logvar_free], dim=1)))
+                    if not isinstance(eraser, NullOp):
+                        free_slice = slice(cond_width, None)
+                        mu_free = p_mu[:, free_slice] + d_mu[:, free_slice]
+                        logvar_free = p_logvar[:, free_slice] + d_logvar[:, free_slice]
+                        out.adv_logits.append(eraser(torch.cat([mu_free, logvar_free], dim=1)))
                 else:
                     z = self.sampling(p_mu, p_logvar, temperature=temperature)
 

@@ -1,4 +1,4 @@
 name: VAEX
 z_dims: [1, 2, 4, 8, 16, 32]
-z_cond_dim: 1
+z_cond_dim: 4
 ema_decay: 0.999

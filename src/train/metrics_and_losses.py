@@ -124,18 +124,22 @@ def get_annealing() -> Loss[Outputs, Targets]:
 
 
 def get_adversarial_loss() -> LossBase[Outputs, Targets]:
-    """Get adversarial loss to erase classifier info."""
-    kld = torch.nn.KLDivLoss(reduction='none', log_target=True)
+    """Get bounded adversarial loss to erase classifier info."""
     log_softmax = torch.nn.LogSoftmax(dim=1)
 
-    def _adv_kld(out: Outputs, _: Targets) -> torch.Tensor:
+    def _adv_jsd(out: Outputs, _: Targets) -> torch.Tensor:
         loss = torch.zeros((), device=out.logits.device)
+        log_p = out.logits
         for adv_logits in out.adv_logits:
-            loss = loss + kld(log_softmax(adv_logits), out.logits).sum(1)
+            log_q = log_softmax(adv_logits)
+            log_m = torch.logaddexp(log_p, log_q) - math.log(2)
+            loss = loss + 0.5 * (
+                (log_p.exp() * (log_p - log_m)).sum(1) + (log_q.exp() * (log_q - log_m)).sum(1)
+            )
 
         return loss
 
-    return Loss[Outputs, Targets](_adv_kld, name='Adv')
+    return Loss[Outputs, Targets](_adv_jsd, name='Adv')
 
 def get_vae_loss() -> LossBase[Outputs, Targets]:
     """Get VAE loss composed with drytorch natural syntax."""

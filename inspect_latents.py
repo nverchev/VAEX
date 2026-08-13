@@ -18,7 +18,8 @@ from src.train.loaders import get_loaders
 from src.train.models import load_extract_autoencoder_module, load_extract_classifier_module
 
 N_BATCHES = 125
-DEAD_KL = 0.01  # nats per dimension below which a dimension carries essentially nothing
+DEAD_KL = 0.01
+"""Nats per dimension below which a dimension carries essentially nothing."""
 
 
 @torch.no_grad()
@@ -40,7 +41,6 @@ def collect(module, loader, device, n_batches: int):
         for stage, (d_mu, d_logvar, p_logvar) in enumerate(
             zip(out.d_mu, out.d_logvar, out.prior_log_var, strict=True)
         ):
-            # per-element KL of the residual parameterisation, summed over the batch
             kl = 0.5 * (-1 - d_logvar + d_logvar.exp() + d_mu**2 * torch.exp(-p_logvar))
             if i == 0:
                 kl_sum.append(kl.sum(0))
@@ -157,7 +157,7 @@ def cond_widths(module) -> list[int]:
     resolutions = list(reversed(module.resolutions))
     for z_dim, res in zip(z_dims, resolutions, strict=True):
         spatial = ((res + 1) // 2) ** 2
-        widths.append(max(0, min(module.z_cond_dim, z_dim - 1)) * spatial)
+        widths.append(min((z_dim + 1) // 2, module.z_cond_dim) * spatial)
 
     return widths
 
@@ -205,7 +205,6 @@ def per_stage_split_probe(module, loader, device, n_batches: int) -> None:
         d_mu = torch.cat(offsets[stage])
         split = widths[stage] if stage < len(widths) else 0
         if not split or split >= mu.size(1):
-            # Not split: the stage is conditioned throughout, so it is all 'cond'.
             logging.info(
                 '%5d %7d %7s %9.3f %9s %9.3f %9s',
                 stage, mu.size(1), '-', probe(mu, y), '-', probe(d_mu, y), '-',
@@ -370,7 +369,6 @@ def confidence_residual(module, loader, device, n_batches: int) -> None:
     logging.info('cosine(slope, delta_p_mu)                : %+.3f  (compensation predicts -1)',
                  float(F.cosine_similarity(slope, delta_p, dim=0)))
 
-    # Strip the confidence-linear part and ask the probe again.
     stripped = d_mu - slope[None, :] * (p - p.mean())[:, None]
     logging.info('probe on d_mu                            : %.3f', probe(d_mu, y))
     logging.info('probe on d_mu minus confidence component : %.3f', probe(stripped, y))
@@ -395,7 +393,6 @@ def per_stage_class_content(module, loader, device, n_batches: int) -> None:
 
         inputs = Inputs(*(tensor.to(device) for tensor in inputs))
         out = module(inputs)
-        # Swap every sample to the class it is not, exactly as a counterfactual would.
         flipped = 1 - targets.label.to(device)
         cf_condition = F.one_hot(flipped, module.dim_target).to(inputs.image.dtype)
         out_cf = module.decode(module.encode(inputs.image), cf_condition, module.full_posterior_weights)
@@ -418,7 +415,6 @@ def per_stage_class_content(module, loader, device, n_batches: int) -> None:
         mu = torch.cat(mu_parts)
         mu_cf = torch.cat(mu_cf_parts)
         delta = mu[y == 1].mean(0) - mu[y == 0].mean(0)
-        # How far the stage's own posterior moves when only the condition changes.
         response = float((mu_cf - mu).norm(dim=1).mean() / mu.norm(dim=1).mean())
         cosine = float(F.cosine_similarity((mu_cf - mu).mean(0), -delta, dim=0))
         logging.info(

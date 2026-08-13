@@ -17,17 +17,14 @@ from src.module.layers import InformationEraser
 from drytorch.core import exceptions as dry_exc
 
 GENERATIVE_SUFFIX = '_bn'
+"""Suffix naming the model whose BatchNorm statistics follow the generative path."""
 
 ClassifierModel = Model[Inputs, torch.Tensor]
+"""Model wrapping a classifier that maps inputs to logits."""
 
 
 class LogEpochMixin(p.ModelProtocol[Inputs, Outputs]):
-    """Mixin that stamps the current training epoch into every forward-pass output.
-
-    The adversarial warm-up rides on the reversal multiplier rather than on the loss, so
-    the erasers train at full strength from the first epoch while the reversed gradient
-    reaching the encoder ramps up.
-    """
+    """Mixin that stamps the epoch into every output and scales the reversal warm-up."""
 
     def __call__(self, inputs: Inputs) -> Outputs:
         warmup = Experiment.get_config().autoencoder.train.adv_warmup_epochs
