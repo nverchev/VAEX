@@ -44,6 +44,7 @@ class Abstract_VAE(nn.Module, abc.ABC):
     cf_strength: float
     z_cond_dim: int
     reversal_strength: float
+    eraser_hidden: int
 
     def __init__(self) -> None:
         super().__init__()
@@ -57,6 +58,7 @@ class Abstract_VAE(nn.Module, abc.ABC):
         self.cf_strength = exp_cfg.autoencoder.objective.cf_strength
         self.z_cond_dim = exp_cfg.autoencoder.model.z_cond_dim
         self.reversal_strength = exp_cfg.autoencoder.objective.reversal_strength
+        self.eraser_hidden = exp_cfg.autoencoder.objective.eraser_hidden
         return
 
     @property
@@ -300,7 +302,8 @@ class BVAE(Abstract_VAE, abc.ABC):
         self.information_eraser = InformationEraser(
             in_dim=2 * self.flat_z_free_dim,
             n_classes=self.dim_target,
-            reversal_strength=self.reversal_strength
+            reversal_strength=self.reversal_strength,
+            intermediate_dim=self.eraser_hidden,
         )
         self.h = nn.parameter.Parameter(torch.ones(1, self.h_dims[-1], self.final_res, self.final_res))
         self.back_to_img = FromLatentConv(self.h_dims[-1], self.final_z_dim, self.final_res)
@@ -364,7 +367,7 @@ class BVAE(Abstract_VAE, abc.ABC):
                         in_dim=in_dim,
                         n_classes=self.dim_target,
                         reversal_strength=self.reversal_strength,
-                        intermediate_dim=min(512, max(16, 512000 // in_dim)),
+                        intermediate_dim=self.eraser_hidden,
                     )
                     if in_dim
                     else NullOp()

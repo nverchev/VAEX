@@ -116,6 +116,7 @@ class ObjectiveConfig:
         freebits: Free-bits floor per latent stage.
         recalibrate_bn: Whether to re-estimate BatchNorm running statistics after training.
         reversal_strength: Multiplier for the gradient reversed in the InformationEraser layer.
+        eraser_hidden: Width of the hidden layer in the InformationEraser layer.
     """
 
     sigma_2: float = 1.0
@@ -124,7 +125,8 @@ class ObjectiveConfig:
     sampling_variance: tuple[float, ...] = (0.0, 0.2, 0.4, 0.6, 0.8, 1.0)
     freebits: tuple[float, ...] = (0.5, 0.25, 0.125, 0.0625, 0.03125, 0.0)
     recalibrate_bn: bool = True
-    reversal_strength: float = 0.5
+    reversal_strength: float = 1.
+    eraser_hidden: int = 512
 
 
 

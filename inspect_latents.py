@@ -61,13 +61,25 @@ def collect(module, loader, device, n_batches: int):
     return kl, p_logvar, d_mu_sq, torch.cat(roots), torch.cat(labels), n_seen
 
 
-def probe(features: torch.Tensor, labels: torch.Tensor, steps: int = 400) -> float:
-    """Held-out accuracy of a linear probe predicting the label from the latent."""
+def probe(features: torch.Tensor, labels: torch.Tensor, steps: int = 400, hidden: int = 0) -> float:
+    """Held-out accuracy of a probe predicting the label from the latent.
+
+    A hidden width matching the eraser audits the erasure with the capacity it was trained
+    against; the linear default understates what the free half can still express.
+    """
     features = (features - features.mean(0)) / features.std(0).clamp_min(1e-6)
     split = int(0.8 * features.size(0))
     x_train, x_test = features[:split], features[split:]
     y_train, y_test = labels[:split], labels[split:]
-    layer = torch.nn.Linear(features.size(1), int(labels.max()) + 1)
+    n_classes = int(labels.max()) + 1
+    layer: torch.nn.Module
+    if hidden:
+        layer = torch.nn.Sequential(
+            torch.nn.Linear(features.size(1), hidden), torch.nn.ReLU(), torch.nn.Linear(hidden, n_classes)
+        )
+    else:
+        layer = torch.nn.Linear(features.size(1), n_classes)
+
     optimizer = torch.optim.Adam(layer.parameters(), lr=1e-2, weight_decay=1e-3)
     with torch.enable_grad():
         for _ in range(steps):
