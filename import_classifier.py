@@ -35,7 +35,7 @@ def main(cfg: AllConfig) -> None:
     source = latest_checkpoint(pathlib.Path(version_dir) / 'checkpoints' / source_name, model_name)
 
     exp = Experiment(cfg, name=cfg.name, par_dir=version_dir, tags=cfg.tags)
-    run = exp.create_run(resume=True, record=True)
+    run = exp.create_run(resume=False, record=True)
     with run:
         day, time = run.id.split('@')
         target = pathlib.Path(version_dir) / 'checkpoints' / cfg.name / day / time / model_name / source.name
