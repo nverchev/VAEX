@@ -413,6 +413,7 @@ class PathSpecs:
         root_exp_dir: Root directory under which all experiment artefacts are stored.
         data_dir: Dataset directory path loaded from environment variables.
         metadata_dir: Directory containing dataset metadata.
+        source_experiment: Experiment a trained model is imported from.
 
     Note:
         Paths are loaded from the ``.env`` file via :class:`~src.config.environment.EnvSettings`.
@@ -422,6 +423,7 @@ class PathSpecs:
     root_exp_dir: pathlib.Path = _env.root_exp_dir
     data_dir: pathlib.Path = _env.dataset_dir
     metadata_dir: pathlib.Path = _env.metadata_dir
+    source_experiment: str = 'main'
 
     @property
     def version_dir(self) -> pathlib.Path:
