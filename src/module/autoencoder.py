@@ -72,19 +72,12 @@ class Abstract_VAE(nn.Module, abc.ABC):
         return self.posterior_weights_from(self.posterior_weight_multiplier)
 
     def posterior_weights_from(self, multiplier: float) -> tuple[float, ...]:
-        """Build per-stage posterior weights growing geometrically towards the pixels.
-
-        These weight the conditioned half of each stage only; the free half always keeps
-        its posterior, so identity is preserved without the schedule having to protect it.
-        Every stage is cut, the finest least and the root most, which is what lets the
-        condition rewrite the semantics while the texture still follows the source.
-        ``1.0`` keeps the whole posterior everywhere and ``0.0`` removes the conditioned
-        half entirely.
+        """Build per-stage weights on the conditioned half, decaying towards the pixels.
 
         Args:
             multiplier: ratio between the weights of consecutive stages.
         """
-        return tuple(multiplier ** (len(self.z_dims) - level) for level in range(len(self.z_dims)))
+        return tuple(multiplier ** (level + 1) for level in range(len(self.z_dims)))
 
     @property
     @abc.abstractmethod
@@ -114,6 +107,8 @@ class Abstract_VAE(nn.Module, abc.ABC):
         out: Outputs,
         condition: torch.Tensor,
         posterior_weights: tuple[float, ...],
+        free_weights: tuple[float, ...] | None = None,
+        free_shift: tuple[torch.Tensor, ...] | None = None,
     ) -> Outputs:
         """Decode latent space into reconstruction.
 
@@ -140,6 +135,8 @@ class Abstract_VAE(nn.Module, abc.ABC):
         inputs: Inputs,
         target_dim: int = 0,
         posterior_weights: tuple[float, ...] | None = None,
+        free_weights: tuple[float, ...] | None = None,
+        free_shift: tuple[torch.Tensor, ...] | None = None,
     ) -> Outputs:
         """Generate a counterfactual sample for the given inputs and target class.
 
@@ -154,7 +151,6 @@ class Abstract_VAE(nn.Module, abc.ABC):
 
         if posterior_weights is None:
             posterior_weights = self.posterior_weights
-            posterior_weights = tuple((*posterior_weights[:-1], 100.0))
 
         x = inputs.image
         orig_condition = self.condition_from(inputs)
@@ -162,7 +158,7 @@ class Abstract_VAE(nn.Module, abc.ABC):
         target[:, target_dim] = 1.0
         cf_condition = (1.0 - self.cf_strength) * orig_condition + self.cf_strength * target
         out = self.encode(x)
-        out = self.decode(out, cf_condition, posterior_weights)
+        out = self.decode(out, cf_condition, posterior_weights, free_weights, free_shift)
         out.image = x
         out.condition = cf_condition
         return out
@@ -186,20 +182,20 @@ class Abstract_VAE(nn.Module, abc.ABC):
         ).recon
 
     @staticmethod
-    def _half_weight(reference: torch.Tensor, cond_width: int, weight: float) -> torch.Tensor:
+    def _half_weight(
+        reference: torch.Tensor, cond_width: int, weight: float, free_weight: float = 1.0
+    ) -> torch.Tensor:
         """Weight the conditioned half of a stage and leave the free half at one.
-
-        An intervention replaces the class and keeps the identity, so the per-stage weight
-        belongs on the conditioned half alone. A weight of one gives the identity, which
-        is what reconstruction passes, so the training path is unaffected.
 
         Args:
             reference: the stage offset, used for width, dtype and device.
             cond_width: flat width of the conditioned half.
             weight: weight to apply there.
+            free_weight: weight to apply to the free half.
         """
         half = reference.new_ones((1, reference.size(1)))
         half[:, :cond_width] = weight
+        half[:, cond_width:] = free_weight
         return half
 
     def sampling(self, mu: torch.Tensor, log_var: torch.Tensor, temperature: float = 1.0) -> torch.Tensor:
@@ -452,7 +448,10 @@ class BVAE(Abstract_VAE, abc.ABC):
         out: Outputs,
         condition: torch.Tensor,
         posterior_weights: tuple[float, ...],
+        free_weights: tuple[float, ...] | None = None,
+        free_shift: tuple[torch.Tensor, ...] | None = None,
     ) -> Outputs:
+        free_weights = free_weights or self.full_posterior_weights
         out.prior_mu = []
         out.prior_log_var = []
         out.adv_logits = []
@@ -462,7 +461,12 @@ class BVAE(Abstract_VAE, abc.ABC):
         posterior = bool(out.d_mu)
         if posterior:
             # p_mu + d_mu = mu, p_logvar + d_logvar = logvar
-            root_weight = self._half_weight(out.d_mu[0], self.flat_z_cond_dim, posterior_weights[0])
+            if free_shift is not None:
+                out.d_mu[0][:, self.flat_z_cond_dim:] += free_shift[0]
+
+            root_weight = self._half_weight(
+                out.d_mu[0], self.flat_z_cond_dim, posterior_weights[0], free_weights[0]
+            )
             z = self.sampling(
                 root_weight * out.d_mu[0] + p_mu,
                 root_weight * out.d_logvar[0] + p_logvar,
@@ -509,7 +513,13 @@ class BVAE(Abstract_VAE, abc.ABC):
                     h = merge(torch.cat([x, h], dim=1))
                     d_mu, d_logvar = inference(h, condition=stage_condition)
                     d_logvar = soft_clamp(d_logvar, -POSTERIOR_LOGVAR_BOUND, POSTERIOR_LOGVAR_BOUND)
-                    stage_weight = self._half_weight(d_mu, cond_width, posterior_weights[level])
+                    if free_shift is not None:
+                        d_mu = d_mu.clone()
+                        d_mu[:, cond_width:] += free_shift[level]
+
+                    stage_weight = self._half_weight(
+                        d_mu, cond_width, posterior_weights[level], free_weights[level]
+                    )
                     z = self.sampling(
                         stage_weight * d_mu + p_mu,
                         stage_weight * d_logvar + p_logvar,
