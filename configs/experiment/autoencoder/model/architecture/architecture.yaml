@@ -1,0 +1,10 @@
+norm_cls: BatchNorm2d
+act_cls: Hardswish
+bn_momentum: 0.2
+bn_eps: 1e-6
+h_dims: [16, 32, 64, 128, 256, 512]
+k_dims: [3, 3, 3, 3, 3]
+strides: [2, 2, 2, 2, 2]
+paddings: [1, 1, 1, 1, 1]
+depths: [1, 1, 1, 1, 1]
+inference_block: adain  # adain = VAEX, mobile = VAEXcat

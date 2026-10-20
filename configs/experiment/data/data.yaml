@@ -1,0 +1,7 @@
+defaults:
+  - dataset: celeba_male
+  - _self_
+
+x_dim: 129
+crop_size: 148
+n_channels: 3

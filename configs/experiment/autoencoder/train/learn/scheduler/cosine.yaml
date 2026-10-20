@@ -1,7 +1,0 @@
-function: Cosine
-restart_interval: 0
-restart_fraction: 0.0
-warmup_steps: 0
-settings:
-  min_decay: 0.1
-  decay_steps: ${autoencoder.train.n_epochs}

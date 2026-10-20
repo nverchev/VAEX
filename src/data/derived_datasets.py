@@ -1,89 +1,90 @@
 """Derived datasets for classification evaluation, autoencoder reconstruction, and counterfactual generation."""
 
+from __future__ import annotations
+
 import abc
 from collections.abc import Sized
-from typing import Any, Generic, TypeVar, override
+from typing import TYPE_CHECKING, Any, override
 
 import torch
-from torch.utils.data import Dataset
 
+from src.data.split import DataSplit
 from src.data.structures import Inputs, Outputs, Targets
-from src.module.autoencoder import Abstract_VAE
-from src.module.classifier import BaseClassifier
 
-V = TypeVar('V', bound=Abstract_VAE)
+if TYPE_CHECKING:
+    from src.train.models import ClassifierModel, VAEModel
 
 
 class ClassifierMixin:
     """Mixin for models with classifier inference."""
 
-    classifier: BaseClassifier
+    classifier: ClassifierModel
 
     @property
     def device(self) -> torch.device:
-        return next(self.classifier.parameters()).device
+        return self.classifier.device
 
-    @torch.inference_mode()
     def _classify(self, batch_inputs: Inputs) -> torch.Tensor:
         """Return the classifier's log-probabilities."""
-        self.classifier.eval()
-        return torch.log_softmax(self.classifier(batch_inputs), dim=-1)
+        return self.classifier.log_probabilities(batch_inputs)
 
 
-class AutoencoderMixin(Generic[V]):
+class AutoencoderMixin:
     """Mixin for autoencoder inference and reconstruction."""
 
-    autoencoder: V
+    autoencoder: VAEModel
 
     @property
     def device(self) -> torch.device:
-        return next(self.autoencoder.parameters()).device
+        return self.autoencoder.device
 
-    @torch.inference_mode()
     def _reconstruct(self, batch_inputs: Inputs) -> Outputs:
-        self.autoencoder.eval()
-        return self.autoencoder(batch_inputs)
+        return self.autoencoder.reconstruct(batch_inputs)
 
 
-class CounterfactualMixin(ClassifierMixin, AutoencoderMixin[Abstract_VAE]):
+class CounterfactualMixin(ClassifierMixin, AutoencoderMixin):
     """Mixin for generating counterfactual reconstructions."""
 
     target_class: int
+    relaxation: float
 
     @property
     def device(self) -> torch.device:
-        classifier_device = next(self.classifier.parameters()).device
-        autoencoder_device = next(self.autoencoder.parameters()).device
-        if classifier_device != autoencoder_device:
+        if self.classifier.device != self.autoencoder.device:
             raise ValueError('Autoencoder and classifier must be on the same device')
 
-        return autoencoder_device
+        return self.autoencoder.device
 
-    @torch.inference_mode()
     def _generate_counterfactual(self, batch_inputs: Inputs) -> Outputs:
-        self.autoencoder.eval()
-        return self.autoencoder.generate_counterfactual(batch_inputs, target_dim=self.target_class)
+        return self.autoencoder.generate_counterfactual(batch_inputs.image, self.target_class, self.relaxation)
 
 
-class ProcessedDataset(abc.ABC):
+class ProcessedDataset(DataSplit, abc.ABC):
     """Base derived dataset with common collation and device transfer functionality."""
 
-    def __init__(self, dataset: Dataset[tuple[Inputs, Targets]], pin_memory: bool = False) -> None:
-        self.dataset = dataset
+    split: DataSplit
+    pin_memory: bool
+
+    def __init__(self, split: DataSplit, pin_memory: bool = False) -> None:
+        super().__init__()
+        self.split = split
         self.pin_memory = pin_memory
         return
 
     def __len__(self) -> int:
-        assert isinstance(self.dataset, Sized)
-        return len(self.dataset)
+        assert isinstance(self.split, Sized)
+        return len(self.split)
+
+    def __getitem__(self, index: int) -> tuple[Inputs, Targets]:
+        return self.__getitems__([index])[0]
 
     @property
     @abc.abstractmethod
     def device(self) -> torch.device:
-        pass
+        """Compute device for batch data transfer."""
 
     def _collate(self, index_list: list[int]) -> tuple[Inputs, Targets]:
-        batch_data = [self.dataset[i] for i in index_list]
+        batch_data = [self.split[i] for i in index_list]
         image = torch.stack([d[0].image for d in batch_data])
         labels = torch.stack([d[1].label for d in batch_data])
         refs = torch.stack([d[1].ref if d[1].ref.numel() > 0 else d[0].image for d in batch_data])
@@ -111,18 +112,17 @@ class ProcessedDataset(abc.ABC):
     @abc.abstractmethod
     def __getitems__(self, index_list: list[int]) -> list[Any]:
         """Get pre-processed data for the given indices."""
-        pass
 
 
-class EvaluatedDataset(ClassifierMixin, ProcessedDataset, Dataset[tuple[Inputs, Targets]]):
+class EvaluatedDataset(ClassifierMixin, ProcessedDataset):
     """Dataset that attaches classifier log-probabilities to each sample."""
 
     def __init__(
         self,
-        dataset: Dataset[tuple[Inputs, Targets]],
-        classifier: BaseClassifier,
+        split: DataSplit,
+        classifier: ClassifierModel,
     ) -> None:
-        super().__init__(dataset=dataset)
+        super().__init__(split=split)
         self.classifier = classifier
         return
 
@@ -133,15 +133,15 @@ class EvaluatedDataset(ClassifierMixin, ProcessedDataset, Dataset[tuple[Inputs, 
         return self._unbind(batch_inputs, batch_targets)
 
 
-class ReconstructedDataset(AutoencoderMixin[V], ProcessedDataset, Generic[V], Dataset[tuple[Inputs, Targets]]):
+class ReconstructedDataset(AutoencoderMixin, ProcessedDataset):
     """Dataset that replaces input features with autoencoder reconstructions."""
 
     def __init__(
         self,
-        dataset: Dataset[tuple[Inputs, Targets]],
-        autoencoder: V,
+        split: DataSplit,
+        autoencoder: VAEModel,
     ) -> None:
-        super().__init__(dataset=dataset)
+        super().__init__(split=split)
         self.autoencoder = autoencoder
         return
 
@@ -149,24 +149,21 @@ class ReconstructedDataset(AutoencoderMixin[V], ProcessedDataset, Generic[V], Da
     def __getitems__(self, index_list: list[int]) -> list[tuple[Inputs, Targets]]:
         batch_inputs, batch_targets = self._collate(index_list)
         recons = self._reconstruct(batch_inputs).recon
-        if recons is None:
-            recons = batch_inputs.image
-
         batch_inputs = Inputs(image=recons)
         batch_targets = Targets(ref=recons, label=batch_targets.label)
         return self._unbind(batch_inputs, batch_targets)
 
 
-class ReconstructedEvaluatedDataset(CounterfactualMixin, ProcessedDataset, Dataset[tuple[Inputs, Targets]]):
+class ReconstructedEvaluatedDataset(CounterfactualMixin, ProcessedDataset):
     """Dataset that classifies inputs first, then reconstructs using the classifier distribution."""
 
     def __init__(
         self,
-        dataset: Dataset[tuple[Inputs, Targets]],
-        autoencoder: Abstract_VAE,
-        classifier: BaseClassifier,
+        split: DataSplit,
+        autoencoder: VAEModel,
+        classifier: ClassifierModel,
     ) -> None:
-        super().__init__(dataset=dataset)
+        super().__init__(split=split)
         self.autoencoder = autoencoder
         self.classifier = classifier
         return
@@ -176,28 +173,27 @@ class ReconstructedEvaluatedDataset(CounterfactualMixin, ProcessedDataset, Datas
         batch_inputs, batch_targets = self._collate(index_list)
         batch_inputs = batch_inputs._replace(log_probs=self._classify(batch_inputs))
         recons = self._reconstruct(batch_inputs).recon
-        if recons is None:
-            recons = batch_inputs.image
-
         batch_inputs = Inputs(image=recons, log_probs=batch_inputs.log_probs)
         batch_targets = Targets(ref=recons, label=batch_targets.label)
         return self._unbind(batch_inputs, batch_targets)
 
 
-class CounterfactualDataset(CounterfactualMixin, ProcessedDataset, Dataset[tuple[Inputs, Targets]]):
+class CounterfactualDataset(CounterfactualMixin, ProcessedDataset):
     """Dataset that generates counterfactual reconstructions conditioned on a target class."""
 
     def __init__(
         self,
-        dataset: Dataset[tuple[Inputs, Targets]],
-        autoencoder: Abstract_VAE,
-        classifier: BaseClassifier,
+        split: DataSplit,
+        autoencoder: VAEModel,
+        classifier: ClassifierModel,
         target_class: int = 1,
+        relaxation: float = 1.0,
     ) -> None:
-        super().__init__(dataset=dataset)
+        super().__init__(split=split)
         self.autoencoder = autoencoder
         self.classifier = classifier
         self.target_class = target_class
+        self.relaxation = relaxation
         return
 
     @override
@@ -205,9 +201,6 @@ class CounterfactualDataset(CounterfactualMixin, ProcessedDataset, Dataset[tuple
         batch_inputs, batch_targets = self._collate(index_list)
         batch_inputs = batch_inputs._replace(log_probs=self._classify(batch_inputs))
         recons = self._generate_counterfactual(batch_inputs).recon
-        if recons is None:
-            recons = batch_inputs.image
-
         batch_inputs = Inputs(image=recons, log_probs=batch_inputs.log_probs)
         target_tensor = torch.full_like(batch_targets.label, self.target_class)
         batch_targets = Targets(ref=recons, label=target_tensor)

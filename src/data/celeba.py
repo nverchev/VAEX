@@ -3,11 +3,12 @@
 from typing import ClassVar
 
 import pandas as pd
+import torch
 
 from src.config.experiment import Experiment
 from src.data.databuilder import Singleton
 from src.data.preprocess import get_preprocessor
-from src.data.split import CelebaDataset, Partitions
+from src.data.split import CelebaSplit, Partitions
 
 
 class CelebaDataBuilder(metaclass=Singleton):
@@ -23,13 +24,13 @@ class CelebaDataBuilder(metaclass=Singleton):
         self.classes = ds_cfg.classes
         self.data_dir = cfg.user.path.data_dir / self.folder_name
         self.target_attr = ds_cfg.target_attr
-        self._ensure_dataset_downloaded()
+        self._ensure_dataset_is_downloaded()
         self.img_dir = self.data_dir / 'img_align_celeba'
         self.preprocessor = get_preprocessor()
         self.attributes = self._read_attributes()
         return
 
-    def _ensure_dataset_downloaded(self) -> None:
+    def _ensure_dataset_is_downloaded(self) -> None:
         if self.data_dir.exists():
             return
 
@@ -38,11 +39,9 @@ class CelebaDataBuilder(metaclass=Singleton):
             import torchvision.datasets as datasets
 
             datasets.CelebA(root=self.data_dir.parent, split='train', download=True)
-        except Exception as err:
-            print(
-                f'Automatic torchvision CelebA download failed:\n\n\t{err}\n\n'
-                'Please download the dataset manually. See the README for instructions.'
-            )
+        except Exception as exc:
+            msg = f'Error downloading CelebA dataset. Download dataset manually and place it in {self.data_dir}'
+            raise RuntimeError(msg) from exc
 
         return
 
@@ -64,7 +63,7 @@ class CelebaDataBuilder(metaclass=Singleton):
 
         return df
 
-    def get_split(self, partition: Partitions | str) -> CelebaDataset:
+    def get_split(self, partition: Partitions | str) -> CelebaSplit:
         total = len(self.attributes)
         tr_split = min(self.train_val_split, int(0.8 * total))
         val_split = min(self.val_test_split, int(0.9 * total))
@@ -86,8 +85,12 @@ class CelebaDataBuilder(metaclass=Singleton):
             df_subset = self.attributes.iloc[:tr_split]
 
         df_subset = df_subset.reset_index(drop=True)
-        images = self.preprocessor.preload_uint8_images(self.img_dir, df_subset)
-        return CelebaDataset(
+        device = Experiment.get_config().user.device
+        if device == 'auto':
+            device = torch.accelerator.current_accelerator(check_available=True) or torch.device('cpu')
+
+        images = self.preprocessor.preload_uint8_images(self.img_dir, df_subset, device=device)
+        return CelebaSplit(
             images=images,
             metadata=df_subset,
             target_attr=self.target_attr,

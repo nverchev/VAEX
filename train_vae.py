@@ -1,105 +1,95 @@
-"""VAE / VAEX training entry point."""
+"""Train the VAEX autoencoder conditioned on the trained classifier.
 
-import sys
-from typing import TYPE_CHECKING, Any
+Usage::
+
+    uv run train_vae.py
+    uv run train_vae.py autoencoder.model.architecture.inference_block=mobile   # VAEXcat
+"""
 
 from drytorch import Test, Trainer
 
-from src.config import AllConfig, Experiment, get_trackers, hydra_main
-from src.config.options import Models
-from src.module.autoencoder import get_autoencoder
+from src.config import Experiment, ExperimentConfig, hydra_main
+from src.trackers import get_trackers, save_learning_curves
+from src.config.environment import DEBUG_MODE
 from src.train import get_learning_schema, get_loaders
-from src.train.batch_norm import BatchNormUpdater
-from src.train.hooks import register_checkpointing, register_early_stopping, register_pruning
-from src.train.metrics_and_losses import get_vae_loss
-from src.train.models import VAEEMAModel, VAEModel, clone_for_generation, load_extract_classifier_module
+from src.train.hooks import register_checkpointing, register_early_stopping
+from src.train.objectives import get_vae_loss
+from src.train.models import get_autoencoder_model, get_classifier_model, load_trained_state
 from src.utils.parallel import DistributedWorker
 
-if TYPE_CHECKING:
-    from optuna import Trial
-else:
-    Trial = Any
 
-
-DEBUG_MODE = any(module in sys.modules for module in ('pydevd', 'debugpy', 'pdb')) or sys.gettrace() is not None
-
-
-def train_vae(trial: Trial | None = None) -> None:
+def train_vae() -> None:
+    """Train the autoencoder and test it."""
     cfg = Experiment.get_config()
     user_cfg = cfg.user
     vae_cfg = cfg.autoencoder
-    architecture = get_autoencoder()
-    if trial is None:
-        model = VAEEMAModel(architecture, name=vae_cfg.name, device=user_cfg.device)
-    else:
-        model = VAEModel(architecture, name=vae_cfg.name, device=user_cfg.device)
-
-    if vae_cfg.model.name == Models.VAEX:
-        classifier = load_extract_classifier_module()
-    else:
-        classifier = None
-
+    model = get_autoencoder_model(mixed_precision=vae_cfg.train.mixed_precision)
+    classifier = get_classifier_model()
+    load_trained_state(classifier)
     train_loader, eval_loader = get_loaders(
         batch_size=vae_cfg.train.batch_size_per_device,
         n_workers=user_cfg.n_workers,
-        classifier=classifier
+        classifier=classifier,
     )
     loss = get_vae_loss()
-    schema = get_learning_schema(vae_cfg)
-    trainer = Trainer(model, name=f'Trainer_{vae_cfg.name}', loader=train_loader, loss=loss, learning_schema=schema)
-    test = Test(model, name=f'Test_{vae_cfg.name}', loader=eval_loader, metric=loss)
-    if user_cfg.load:
-        trainer.load_checkpoint(user_cfg.load)
-
+    builder = Trainer.builder(
+        model,
+        learning_schema=get_learning_schema(vae_cfg),
+        loader=train_loader,
+        loss=loss,
+        name=f'Trainer_{vae_cfg.name}',
+    )
     if not cfg.final:
-        trainer.add_validation(eval_loader, f'Validation_{vae_cfg.name}')
+        builder.add_validation(eval_loader, val_name=f'Validation_{vae_cfg.name}')
 
     if not cfg.final and vae_cfg.train.early_stopping.active:
         cfg_early = vae_cfg.train.early_stopping
-        register_early_stopping(trainer, window=cfg_early.window, patience=cfg_early.patience)
+        register_early_stopping(builder, window=cfg_early.window, patience=cfg_early.patience)
 
-    if trial is not None:
-        register_pruning(trainer, trial)
-    else:
-        register_checkpointing(trainer, user_cfg.checkpoint_every or 1)
+    register_checkpointing(builder, checkpoint_every=user_cfg.checkpoint_every)
+    trainer = builder.build()
+    if user_cfg.load:
+        trainer.load_checkpoint(user_cfg.load)
 
     trainer.train_until(vae_cfg.train.n_epochs)
-    test()
-    if vae_cfg.objective.recalibrate_bn and isinstance(model, VAEEMAModel):
-        generative = clone_for_generation(model)
-        updater = BatchNormUpdater(
-            generative,
-            name=f'BatchNormUpdater_{vae_cfg.name}',
-            loader=eval_loader,
-        )
-        updater()
-        generative.save_state()
+    trainer.save_checkpoint()
+    if cfg.final:
+        Test(model, name=f'Test_{vae_cfg.name}', loader=eval_loader, metric=loss)()
 
-    return None
+    return
 
 
-def setup_and_train(cfg: AllConfig) -> None:
-    trackers = get_trackers(cfg, DEBUG_MODE)
-    resume = cfg.user.load != 0 or cfg.autoencoder.model.name == Models.VAEX
+def setup_and_train(cfg: ExperimentConfig) -> None:
+    """Set up the experiment and train the autoencoder.
+
+    Args:
+        cfg: root configuration object.
+    """
+    trackers = get_trackers(cfg)
     exp = Experiment(cfg, name=cfg.name, par_dir=cfg.user.path.version_dir, tags=cfg.tags)
     for tracker in trackers:
         exp.trackers.subscribe(tracker)
 
-    with exp.create_run(resume=resume, record=not DEBUG_MODE):
+    # resume the run holding the classifier: the last run of the experiment, or the one user.run_id names
+    with exp.create_run(resume=True, run_id=cfg.user.run_id, record=not DEBUG_MODE):
         train_vae()
+        name = cfg.autoencoder.name
+        source_names = (f'Trainer_{name}', f'Validation_{name}')
+        save_learning_curves(trackers, name, show=cfg.user.plot.show, source_names=source_names)
 
-    return None
+    return
 
 
 @hydra_main
-def main(cfg: AllConfig) -> None:
+def main(cfg: ExperimentConfig) -> None:
+    """Entry point, spawning the distributed workers when ``n_subprocesses`` is set."""
     n_processes = cfg.user.n_subprocesses
     if n_processes:
         DistributedWorker(setup_and_train, n_processes).spawn(cfg)
     else:
         setup_and_train(cfg)
 
-    return None
+    return
 
 
 if __name__ == '__main__':

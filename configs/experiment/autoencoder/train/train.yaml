@@ -1,0 +1,9 @@
+defaults:
+  - learn: learn
+  - early_stopping: early_stopping
+  - _self_
+
+n_epochs: 50
+batch_size: 32
+mixed_precision: null  # null = full precision
+_n_subprocesses: ${user.n_subprocesses}

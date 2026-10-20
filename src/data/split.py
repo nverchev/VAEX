@@ -6,7 +6,7 @@ import enum
 
 import pandas as pd
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, Subset as TorchSubset
 
 from src.data.structures import Inputs, Targets
 
@@ -20,7 +20,15 @@ class Partitions(enum.Enum):
     test = enum.auto()
 
 
-class CelebaDataset(Dataset[tuple[Inputs, Targets]]):
+class DataSplit(Dataset[tuple[Inputs, Targets]]):
+    """Dataset split yielding inputs and targets."""
+
+
+class Subset(DataSplit, TorchSubset[tuple[Inputs, Targets]]):
+    """Subset of a dataset split that preserves the DataSplit interface."""
+
+
+class CelebaSplit(DataSplit):
     """CelebA dataset split container."""
 
     def __init__(
@@ -34,9 +42,7 @@ class CelebaDataset(Dataset[tuple[Inputs, Targets]]):
         self.target_attr = target_attr
         self._images = images
         if self.target_attr in self.metadata:
-            self.attr_is_true = torch.tensor(
-                self.metadata[self.target_attr].values == 1, dtype=torch.long
-            )
+            self.attr_is_true = torch.tensor(self.metadata[self.target_attr].values == 1, dtype=torch.long)
         else:
             raise ValueError(f'target_attr {self.target_attr!r} not in dataset metadata')
 
@@ -49,5 +55,3 @@ class CelebaDataset(Dataset[tuple[Inputs, Targets]]):
         target = self.attr_is_true[index]
         img_tensor = self._images[index].to(torch.float32).mul_(1.0 / 255.0)
         return Inputs(image=img_tensor, condition=target), Targets(label=target, ref=img_tensor)
-
-

@@ -1,0 +1,44 @@
+# User settings
+
+seed: null  # null = unset
+
+# Compute
+device: auto  # auto = the available accelerator
+n_workers: 0
+n_subprocesses: 0  # 0 = no DDP
+
+# Checkpointing
+checkpoint_every: 10
+load: 0  # 0 = start from scratch, -1 = the latest checkpoint
+run_id: null  # null = the last run
+
+# Generation
+generate:
+  batch_size: 16
+
+# Evaluation
+evaluation:
+  fid_samples: 2048
+  fid_relaxation: 0.0
+
+# Trackers
+trackers:
+  hydra: true
+  tensorboard: true
+  wandb: false
+  sqlalchemy: false
+  csv: true
+  matplotlib: true
+  plotly: false
+
+# Plotting
+plot:
+  sample_indices:
+    - 0
+    - 1
+    - 2
+    - 5
+    - 10
+  use_train: false
+  n_delta: 5
+  show: false

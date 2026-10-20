@@ -1,102 +1,74 @@
 """Reconstruct samples from the dataset."""
 
 import logging
-import random
 
-from collections.abc import Sized
-
-import matplotlib.pyplot as plt
-import numpy as np
 import torch
-from PIL import Image
 
-from src.config import AllConfig, Experiment, hydra_main
-from src.config.options import Models
-from src.data import Inputs, Partitions, get_dataset
-from src.train.models import load_extract_autoencoder_module, load_extract_classifier_module
+from drytorch.lib import loading
+
+from src.config import Experiment, ExperimentConfig, hydra_main
+from src.trackers import get_trackers
+from src.train.events import ImageEvent
+from src.data import Inputs, Partitions, get_split
+from src.train.models import get_autoencoder_model, get_classifier_model, load_trained_state
 
 
 @torch.inference_mode()
 def reconstruct_samples() -> None:
-    """Reconstruct and visualize selected dataset samples."""
+    """Reconstruct selected dataset samples and publish each next to its original."""
     cfg = Experiment.get_config()
     cfg_user = cfg.user
-    save_dir_base = cfg_user.path.version_dir / 'images' / cfg.name / 'reconstructed'
     if cfg_user.plot.use_train:
         partition = Partitions.train_val if cfg.final else Partitions.train
     else:
         partition = Partitions.test if cfg.final else Partitions.val
 
-    dataset = get_dataset(partition)
-    assert isinstance(dataset, Sized)
-    vae_module = load_extract_autoencoder_module()
-    if cfg.autoencoder.model.name == Models.VAEX:
-        classifier = load_extract_classifier_module()
-    else:
-        classifier = None
-
-    device = next(vae_module.parameters()).device
-    sample_indices = cfg_user.plot.sample_indices
-
-    if not sample_indices:
-        sample_indices = random.sample(range(len(dataset)), min(8, len(dataset)))
-
-    for i in sample_indices:
-        if i >= len(dataset):
-            raise ValueError(f'Index {i} is too large for the selected dataset of length {len(dataset)}')
-
-        inputs_item, target_item = dataset[i]
-        img_tensor = inputs_item.image.unsqueeze(0).to(device)
-        cond_tensor = (
-            target_item.label.unsqueeze(0).to(device).float()
-            if target_item.label is not None
-            else torch.empty(0, device=device)
+    split = get_split(partition)
+    vae_model = get_autoencoder_model()
+    load_trained_state(vae_model, epoch=cfg_user.load or -1)
+    classifier = get_classifier_model()
+    load_trained_state(classifier)
+    device = vae_model.device
+    if cfg_user.plot.sample_indices:
+        sample_indices, (samples, targets) = loading.take_from_dataset(
+            split, indices=cfg_user.plot.sample_indices, device=device
         )
-        inputs = Inputs(image=img_tensor, condition=cond_tensor)
-        if classifier is not None:
-            inputs = inputs._replace(log_probs=torch.log_softmax(classifier(inputs), dim=1))
+    else:
+        sample_indices, (samples, targets) = loading.take_from_dataset(
+            split, n_samples=cfg_user.generate.batch_size, preserve_order=False, device=device
+        )
 
-        outputs = vae_module(inputs)
-        recon_img = outputs.recon
-        original_np = img_tensor[0].detach().cpu().numpy().transpose(1, 2, 0)
-        recon_np = recon_img[0].detach().cpu().numpy().transpose(1, 2, 0)
-        original_np = np.clip(original_np, 0.0, 1.0)
-        recon_np = np.clip(recon_np, 0.0, 1.0)
-        label_idx = int(target_item.label.item()) if target_item.label is not None else 0
-        logging.info('Reconstructing Sample %d (label index: %d):', i, label_idx)
-        save_dir = save_dir_base / f'sample_{i}'
-        save_dir.mkdir(parents=True, exist_ok=True)
-        _, axes = plt.subplots(1, 3, figsize=(12, 4))
-        axes[0].imshow(original_np)
-        axes[0].set_title('Original')
-        axes[0].axis('off')
-        axes[1].imshow(recon_np)
-        axes[1].set_title('Reconstructed')
-        axes[1].axis('off')
-        diff_np = np.abs(original_np - recon_np)
-        axes[2].imshow(diff_np)
-        axes[2].set_title('Absolute Difference')
-        axes[2].axis('off')
-        plt.tight_layout()
-        comparison_path = save_dir / 'comparison.png'
-        plt.savefig(comparison_path, bbox_inches='tight')
-        plt.close()
-        orig_img_pil = Image.fromarray((original_np * 255.0).astype(np.uint8))
-        recon_img_pil = Image.fromarray((recon_np * 255.0).astype(np.uint8))
-        orig_img_pil.save(save_dir / 'original.png')
-        recon_img_pil.save(save_dir / 'reconstructed.png')
+    logging.info('Reconstructing %d samples using %s...', len(sample_indices), vae_model.name)
+    inputs = Inputs(image=samples.image, condition=targets.label.float())
+    inputs = inputs._replace(log_probs=classifier.log_probabilities(inputs))
+    outputs = vae_model.reconstruct(inputs)
+    original_captions = classifier.describe_predictions(inputs.image)
+    recon_captions = classifier.describe_predictions(outputs.recon)
+    for position, index in enumerate(sample_indices):
+        original = inputs.image[position].clamp(0, 1)
+        recon = outputs.recon[position].clamp(0, 1)
+        label = cfg.data.dataset.classes[int(targets.label[position])]
+        logging.info('Reconstructing Sample %d (label: %s):', index, label)
+        folder = f'{partition.name}/sample_{index}'
+        ImageEvent(image=original, title='original', caption=f'{label}, {original_captions[position]}', folder=folder)
+        ImageEvent(image=recon, title='reconstruction', caption=recon_captions[position], folder=folder)
+        ImageEvent(image=(original - recon).abs(), title='difference', caption='Absolute difference', folder=folder)
 
-    return None
+    return
 
 
 @hydra_main
-def main(cfg: AllConfig) -> None:
+def main(cfg: ExperimentConfig) -> None:
     """Set up the experiment and launch the sample reconstruction."""
+    trackers = get_trackers(cfg)
     exp = Experiment(cfg, name=cfg.name, par_dir=cfg.user.path.version_dir, tags=cfg.tags)
-    with exp.create_run(resume=True):
+    for tracker in trackers:
+        exp.trackers.subscribe(tracker)
+
+    with exp.create_run(resume=True, run_id=cfg.user.run_id):
         reconstruct_samples()
 
-    return None
+    return
 
 
 if __name__ == '__main__':

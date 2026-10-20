@@ -1,11 +1,10 @@
 defaults:
-  - all_config
   - classification: classification
   - autoencoder: autoencoder
-  - user: user_settings
-  - data: default_data
+  - user: user
+  - data: data
   - _self_
 
 
-variation:
+variation: null  # null = the current git branch
 final: false

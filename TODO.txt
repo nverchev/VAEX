@@ -1,0 +1,10 @@
+Later, to build main:
+
+On development, remove the drytorch = { path = "../drytorch", editable = true } line, set the released version in the dependencies, and run uv lock --upgrade-package drytorch. Commit that.
+Turn development into a single commit on top of the GitHub history:
+
+git switch --detach development
+git reset --soft origin/main                    # parent = the last remote commit; the files stay as on development
+git commit -m "feat: new version powered by DRYTorch"
+git branch -f main HEAD
+git switch development

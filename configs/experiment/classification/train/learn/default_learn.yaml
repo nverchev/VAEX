@@ -1,8 +1,0 @@
-defaults:
-  - scheduler: cosine
-  - _self_
-
-optimizer_name: AdamW
-learning_rate: 0.001
-opt_settings:
-  weight_decay: 0.0001

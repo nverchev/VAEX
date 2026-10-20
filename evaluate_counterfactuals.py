@@ -1,258 +1,240 @@
-"""Evaluate counterfactual generation performance."""
+"""Evaluate the VAE, the success of its counterfactuals for each posterior relaxation, and the FID.
+
+Usage::
+
+    uv run evaluate_counterfactuals.py
+    uv run evaluate_counterfactuals.py final=true
+"""
 
 import logging
+from collections.abc import Iterator, Mapping, Sequence, Sized
 from typing import cast
 
 import torch
 from torch import Tensor
-from torch.utils.data import Dataset, Subset
 
-from drytorch import DataLoader, Model, Test
-from drytorch.core import protocols as p
+from drytorch import DataLoader, Test
+from drytorch.lib import loading
 from drytorch.lib.objectives import Metric, compute_metrics
 
-from src.config import AllConfig, Experiment, hydra_main
-from src.data.derived_datasets import CounterfactualDataset, ReconstructedEvaluatedDataset
-from src.data.dataset import get_dataset
-from src.data.split import Partitions
+from src.config import Experiment, ExperimentConfig, hydra_main
+from src.trackers import get_trackers
+from src.data.dataset import get_split
+from src.data.derived_datasets import CounterfactualDataset, EvaluatedDataset, ReconstructedEvaluatedDataset
+from src.data.split import DataSplit, Partitions, Subset
 from src.data.structures import Inputs, Targets
-from src.module.autoencoder import Abstract_VAE
-from src.module.classifier import BaseClassifier, get_classifier
-from src.train.metrics_and_losses import get_cross_entropy
-from src.train.models import load_extract_autoencoder_module
+from src.train.fid import FrechetInceptionDistance
+from src.train.objectives import get_classifier_loss, get_counterfactual_success, get_vae_loss
+from src.train.models import ClassifierModel, VAEModel, get_autoencoder_model, get_classifier_model, load_trained_state
 
 
-def get_label_distribution(test_loader: p.LoaderProtocol[tuple[Inputs, Targets]], class_names: list[str]) -> Tensor:
-    """Extract labels from the test loader and compute distribution."""
-    with torch.inference_mode():
-        labels = torch.cat([batch_data[1].label for batch_data in test_loader])
-
-    counts = [(labels == i).sum().item() for i in range(len(class_names))]
-    dist_str = ' | '.join(f'{name}: {int(count)}' for name, count in zip(class_names, counts, strict=True))
-    logging.info('Label distribution: %s', dist_str)
-    return labels
-
-
-def evaluate_original_performance(
-    classifier_model: Model[Inputs, Tensor],
-    test_loader: DataLoader[tuple[Inputs, Targets]],
-) -> Test[Inputs, Targets, Tensor]:
-    """Evaluate classifier performance on original test data."""
-    loss = get_cross_entropy()
-    test_original = Test(classifier_model, name='ClassificationOriginal', loader=test_loader, metric=loss)
-    test_original(store_outputs=True)
-    return test_original
-
-
-def evaluate_reconstructed_performance(
-    classifier_model: Model[Inputs, Tensor],
-    test_dataset: Dataset[tuple[Inputs, Targets]],
-    vae: Abstract_VAE,
-    classifier: BaseClassifier,
+def evaluate_success(
+    classifier_model: ClassifierModel,
+    split: DataSplit,
+    vae_model: VAEModel,
+    groups: Mapping[int, Sequence[int]],
+    relaxation: float,
     batch_size: int,
-) -> None:
-    """Evaluate classifier performance on reconstructed test data."""
-    reconstructed_dataset = ReconstructedEvaluatedDataset(
-        dataset=test_dataset,
-        autoencoder=vae,
-        classifier=classifier,
-    )
-    reconstructed_loader = DataLoader(dataset=reconstructed_dataset, batch_size=batch_size, pin_memory=False)
-    loss = get_cross_entropy()
-    test_reconstructed = Test(
-        classifier_model, name='ClassificationReconstructed', loader=reconstructed_loader, metric=loss
-    )
-    test_reconstructed()
-    return None
+    *,
+    name: str,
+) -> float:
+    """Get the fraction of counterfactuals that the classifier assigns to their target.
 
+    Args:
+        classifier_model: the classifier.
+        split: the images.
+        vae_model: the trained VAE.
+        groups: the indices of the images turned towards each target class.
+        relaxation: weight of the posterior of the lower latents.
+        batch_size: number of images in a batch.
+        name: the prefix of the names of the tests.
 
-def evaluate_counterfactual_performance(
-    classifier_model: Model[Inputs, Tensor],
-    test_dataset: Dataset[tuple[Inputs, Targets]],
-    vae: Abstract_VAE,
-    classifier: BaseClassifier,
-    class_names: list[str],
-    batch_size: int,
-) -> None:
-    """Evaluate counterfactual generation performance across all classes."""
+    Returns:
+        The fraction of successful counterfactuals.
+    """
     metrics: list[Metric[Tensor, Targets]] = []
-    loss = get_cross_entropy()
+    for target, indices in groups.items():
+        if not indices:
+            continue
 
-    for j, class_name in enumerate(class_names):
-        counterfactual_dataset = CounterfactualDataset(
-            test_dataset, autoencoder=vae, classifier=classifier, target_class=j
+        counterfactuals = CounterfactualDataset(
+            Subset(split, indices),
+            autoencoder=vae_model,
+            classifier=classifier_model,
+            target_class=target,
+            relaxation=relaxation,
         )
-        counterfactual_loader = DataLoader(dataset=counterfactual_dataset, batch_size=batch_size, pin_memory=False)
-        test = Test(classifier_model, name=f'Counterfeit_to_{class_name}', loader=counterfactual_loader, metric=loss)
+        loader = DataLoader(dataset=counterfactuals, batch_size=batch_size, pin_memory=False)
+        test_name = f'{name}_r{relaxation:.2f}_to_{target}'
+        test = Test(classifier_model, name=test_name, loader=loader, metric=get_counterfactual_success())
         test()
         metrics.append(cast(Metric[Tensor, Targets], test.objective))
 
-    overall_metric = compute_overall_metric(metrics)
-    if overall_metric:
-        logging.info('Overall counterfeit success:')
-        log_metrics(overall_metric)
-
-    return None
-
-
-def evaluate_misclassified_samples(
-    classifier_model: Model[Inputs, Tensor],
-    test_dataset: Dataset[tuple[Inputs, Targets]],
-    vae: Abstract_VAE,
-    classifier: BaseClassifier,
-    labels: Tensor,
-    predictions: Tensor,
-    batch_size: int,
-) -> None:
-    """Evaluate reconstruction performance on misclassified samples."""
-    labels = labels.to(predictions.device)
-    misclassified_bool = predictions != labels
-
-    misclassified_indices = misclassified_bool.nonzero().squeeze(-1)
-    if misclassified_indices.numel() == 0:
-        logging.info('No misclassified samples found.')
-        return None
-
-    misclassified_dataset = Subset(test_dataset, indices=list(map(int, misclassified_indices)))
-    misclassified_reconstruction = ReconstructedEvaluatedDataset(
-        dataset=misclassified_dataset, autoencoder=vae, classifier=classifier
-    )
-    misclassified_reconstruction_loader = DataLoader(
-        misclassified_reconstruction, batch_size=batch_size, pin_memory=False
-    )
-    loss = get_cross_entropy()
-    test_misclassified = Test(
-        classifier_model, name='MisclassifiedReconstructed', loader=misclassified_reconstruction_loader, metric=loss
-    )
-    test_misclassified()
-    return None
-
-
-def evaluate_class_specific_counterfactuals(
-    classifier_model: Model[Inputs, Tensor],
-    test_dataset: Dataset[tuple[Inputs, Targets]],
-    vae: Abstract_VAE,
-    classifier: BaseClassifier,
-    labels: Tensor,
-    predictions: Tensor,
-    class_names: list[str],
-    batch_size: int,
-) -> None:
-    """Evaluate counterfactual performance for specific class transitions."""
-    labels = labels.to(predictions.device)
-    metrics: list[Metric[Tensor, Targets]] = []
-    loss = get_cross_entropy()
-
-    for i, name_i in enumerate(class_names):
-        for j, name_j in enumerate(class_names):
-            if i == j:
-                continue
-
-            i_instead_of_j = torch.logical_and(predictions == i, labels == j)
-            if not torch.any(i_instead_of_j):
-                continue
-
-            counterfactual_indices = list(i_instead_of_j.nonzero().squeeze(-1))
-            i_instead_of_j_dataset = Subset(test_dataset, indices=list(map(int, counterfactual_indices)))
-            counterfactual_dataset = CounterfactualDataset(
-                i_instead_of_j_dataset,
-                autoencoder=vae,
-                classifier=classifier,
-                target_class=j,
-            )
-            counterfactual_loader = DataLoader(dataset=counterfactual_dataset, batch_size=batch_size, pin_memory=False)
-            test = Test(classifier_model, name=f'{name_i}_to_{name_j}', loader=counterfactual_loader, metric=loss)
-            test(store_outputs=True)
-            metrics.append(cast(Metric[Tensor, Targets], test.objective))
-
-    if metrics:
-        overall_metric = compute_overall_metric(metrics)
-        if overall_metric:
-            logging.info('Overall misclassified counterfeit success:')
-            log_metrics(overall_metric)
-
-    return None
-
-
-def log_metrics(metrics: p.ObjectiveProtocol[Tensor, Targets], prefix: str = '') -> None:
-    """Log metrics summary."""
-    results = compute_metrics(metrics)
-    metrics_str = ' | '.join(f'{k}: {v:.3f}' for k, v in results.items())
-    logging.info('%s%s', prefix, metrics_str)
-    return None
-
-
-def compute_overall_metric(metrics: list[Metric[Tensor, Targets]]) -> Metric[Tensor, Targets] | None:
-    """Compute overall metric by merging individual metrics."""
-    if not metrics:
-        return None
-
-    overall_metric = metrics[0].copy()
+    overall = metrics[0].copy()
     for metric in metrics[1:]:
-        overall_metric.merge_state(metric)
+        overall.merge_state(metric)
 
-    return overall_metric
+    return float(compute_metrics(overall)['Success'])
+
+
+def evaluate_fid(
+    classifier_model: ClassifierModel,
+    vae_model: VAEModel,
+    split: DataSplit,
+    predictions: Tensor,
+    batch_size: int,
+) -> None:
+    """Log the FID of the reconstructions and of the counterfactuals.
+
+    The first ``user.evaluation.fid_samples`` images are reconstructed and turned towards a
+    class the classifier does not predict for them, with the posterior weighted by
+    ``user.evaluation.fid_relaxation``; the next as many images are the reference.
+
+    Args:
+        classifier_model: the trained classifier.
+        vae_model: the trained VAE.
+        split: the images of the evaluation partition.
+        predictions: the classes the classifier predicts for the images.
+        batch_size: number of images in a batch.
+
+    Raises:
+        ValueError: if the partition has fewer than twice ``fid_samples`` images.
+    """
+    n_samples = Experiment.get_config().user.evaluation.fid_samples
+    if 2 * n_samples > len(cast(Sized, split)):
+        msg = f'The FID needs {2 * n_samples} images, the evaluation partition has {len(cast(Sized, split))}.'
+        raise ValueError(msg)
+
+    device = vae_model.device
+    reference = _take_batches(split, range(n_samples, 2 * n_samples), batch_size, device)
+    logging.info('Calculating the Inception features of %d reference images.', n_samples)
+    fid = FrechetInceptionDistance((inputs.image for inputs in reference), device=device)
+    reconstructions = _reconstruct(classifier_model, vae_model, split, range(n_samples), batch_size)
+    distance = fid(vae_model, reconstructions, name='FID_reconstructions')
+    logging.info('FID of the reconstructions: %.1f', distance)
+    relaxation = Experiment.get_config().user.evaluation.fid_relaxation
+    images = _generate_counterfactuals(vae_model, split, predictions[:n_samples], relaxation, batch_size)
+    distance = fid(vae_model, images, name=f'FID_counterfactuals_r{relaxation:.2f}')
+    logging.info('FID of the counterfactuals (r=%.2f): %.1f', relaxation, distance)
+    return
 
 
 @torch.inference_mode()
-def evaluate_counterfactuals(
-    classifier_model: Model[Inputs, Tensor],
-    vae: Abstract_VAE,
-    classifier: BaseClassifier,
-) -> None:
-    """Evaluate counterfactuals according to accuracy, reconstruction, and flip metrics."""
+def evaluate_counterfactuals() -> None:
+    """Evaluate the trained classifier, the reconstructions, the classifier on them, and the counterfactuals."""
     cfg = Experiment.get_config()
-    batch_size = cfg.classification.train.batch_size
-
-    partition = Partitions.test if cfg.final else Partitions.val
-    test_dataset = get_dataset(partition)
-    class_names = cfg.data.dataset.classes
-    test_loader = DataLoader(dataset=test_dataset, batch_size=batch_size)
-
-    test_labels = get_label_distribution(test_loader, class_names)
-    test_original = evaluate_original_performance(classifier_model, test_loader)
-    evaluate_reconstructed_performance(classifier_model, test_dataset, vae, classifier, batch_size)
-    evaluate_counterfactual_performance(classifier_model, test_dataset, vae, classifier, class_names, batch_size)
-
-    outputs_logits = torch.cat(test_original.outputs_list)
-    predictions = outputs_logits.argmax(dim=1)
-
-    evaluate_misclassified_samples(
-        classifier_model, test_dataset, vae, classifier, test_labels, predictions, batch_size
-    )
-    evaluate_class_specific_counterfactuals(
+    classifier_model = get_classifier_model()
+    load_trained_state(classifier_model)
+    vae_model = get_autoencoder_model()
+    load_trained_state(vae_model, epoch=cfg.user.load or -1)
+    batch_size = cfg.autoencoder.train.batch_size
+    split = get_split(Partitions.test if cfg.final else Partitions.val)
+    loader = DataLoader(dataset=split, batch_size=batch_size, pin_memory=False)
+    original = Test(classifier_model, name='ClassificationOriginal', loader=loader, metric=get_classifier_loss())
+    original(store_outputs=True)
+    predictions = torch.cat(list(original.outputs_list)).argmax(dim=1).cpu()
+    evaluated = EvaluatedDataset(split, classifier_model)
+    evaluated_loader = DataLoader(dataset=evaluated, batch_size=batch_size, pin_memory=False)
+    Test(vae_model, name='Reconstruction', loader=evaluated_loader, metric=get_vae_loss())()
+    reconstructed = ReconstructedEvaluatedDataset(split, autoencoder=vae_model, classifier=classifier_model)
+    reconstructed_loader = DataLoader(dataset=reconstructed, batch_size=batch_size, pin_memory=False)
+    Test(
         classifier_model,
-        test_dataset,
-        vae,
-        classifier,
-        test_labels,
-        predictions,
-        class_names,
-        batch_size,
-    )
-    return None
+        name='Classification_reconstructions',
+        loader=reconstructed_loader,
+        metric=get_classifier_loss(),
+    )()
+    labels = torch.cat([targets.label for _, targets in loader]).cpu()
+    classes = range(vae_model.module.n_classes)
+
+    # every image aims at the classes not predicted for it; a misclassified one also at its label
+    groups = {target: _get_indices(predictions != target) for target in classes}
+    misclassified = {target: _get_indices((labels == target) & (predictions != target)) for target in classes}
+    n_delta = cfg.user.plot.n_delta
+    for step in range(n_delta + 1):
+        relaxation = step / n_delta
+        success = evaluate_success(
+            classifier_model, split, vae_model, groups, relaxation, batch_size, name='Counterfactual'
+        )
+        logging.info('Successful counterfactuals with r=%.2f: %.1f%%', relaxation, 100 * success)
+        success = evaluate_success(
+            classifier_model,
+            split,
+            vae_model,
+            misclassified,
+            relaxation,
+            batch_size,
+            name='Counterfactual_misclassified',
+        )
+        logging.info('Misclassified turned towards their label with r=%.2f: %.1f%%', relaxation, 100 * success)
+
+    evaluate_fid(classifier_model, vae_model, split, predictions, batch_size)
+    return
 
 
 @hydra_main
-def main(cfg: AllConfig) -> None:
-    """Set up the experiment and launch counterfactual evaluation."""
+def main(cfg: ExperimentConfig) -> None:
+    """Set up the experiment and launch the evaluation."""
+    trackers = get_trackers(cfg)
     exp = Experiment(cfg, name=cfg.name, par_dir=cfg.user.path.version_dir, tags=cfg.tags)
-    with exp.create_run(resume=True):
-        classifier = get_classifier().eval()
+    for tracker in trackers:
+        exp.trackers.subscribe(tracker)
 
-        classifier_model = Model(classifier, name=cfg.classification.name, device=cfg.user.device)
-        try:
-            classifier_model.load_state()
-        except Exception:
-            logging.warning('Could not load classifier weights; running evaluation with default model parameters.')
+    with exp.create_run(resume=True, run_id=cfg.user.run_id):
+        evaluate_counterfactuals()
 
-        ema_module = load_extract_autoencoder_module()
-        if not isinstance(ema_module, Abstract_VAE):
-            raise TypeError('EMA module is not an Abstract_VAE.')
+    return
 
-        evaluate_counterfactuals(classifier_model, ema_module, classifier)
 
-    return None
+@torch.inference_mode()
+def _generate_counterfactuals(
+    vae_model: VAEModel,
+    split: DataSplit,
+    predictions: Tensor,
+    relaxation: float,
+    batch_size: int,
+) -> Iterator[Tensor]:
+    for target in range(vae_model.module.n_classes):  # consider only images with different predictions
+        indices = (predictions != target).nonzero().squeeze(-1).tolist()
+        if not indices:
+            continue
+
+        for inputs in _take_batches(split, indices, batch_size, vae_model.device):
+            yield vae_model.generate_counterfactual(inputs.image, target, relaxation).recon
+
+    return
+
+
+@torch.inference_mode()
+def _reconstruct(
+    classifier_model: ClassifierModel,
+    vae_model: VAEModel,
+    split: DataSplit,
+    indices: Sequence[int],
+    batch_size: int,
+) -> Iterator[Tensor]:
+    for inputs in _take_batches(split, indices, batch_size, vae_model.device):
+        labelled = inputs._replace(log_probs=classifier_model.log_probabilities(inputs))
+        yield vae_model.reconstruct(labelled).recon
+
+    return
+
+
+def _take_batches(
+    split: DataSplit,
+    indices: Sequence[int],
+    batch_size: int,
+    device: torch.device,
+) -> Iterator[Inputs]:
+    for start in range(0, len(indices), batch_size):
+        _, (inputs, _) = loading.take_from_dataset(split, indices=indices[start : start + batch_size], device=device)
+        yield inputs
+
+    return
+
+
+def _get_indices(mask: Tensor) -> list[int]:
+    return mask.nonzero().squeeze(1).tolist()
 
 
 if __name__ == '__main__':

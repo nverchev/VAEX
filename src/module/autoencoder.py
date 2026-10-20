@@ -1,619 +1,578 @@
-"""Hierarchical VAE and VAEX autoencoder architectures."""
+"""Hierarchical VAE conditioned on the probabilities of a classifier (VAEX)."""
 
 import abc
 import itertools
 
-from typing import override
+from typing import Final, cast, override
 
 import torch
 import torch.nn as nn
 
 from src.config.experiment import Experiment
 from src.config.options import InferenceBlock, Models
-from src.data.structures import Inputs, Outputs
+from src.config.torch import ActClass, NormClass
+from src.data.structures import Encoding, Inputs, Outputs
 from src.module.layers import (
     ConvBlock,
     FromLatentConv,
-    LinearLayer,
-    NullOp,
+    NormFactory,
     ResBlock,
     ToLatentBlock,
     ToLatentConvADAIN,
     ToLatentConvMobile,
-    InformationEraser,
-    reverse_zip,
+    get_batch_norm,
     soft_clamp,
 )
 
+__all__ = [
+    'VAEX',
+    'BaseAutoencoder',
+    'BaseVAEX',
+    'LatentStage',
+    'get_autoencoder',
+]
 
-PRIOR_LOGVAR_BOUND = 2.0
-"""Symmetric soft bound on the log-variance from the top-down prior."""
-POSTERIOR_LOGVAR_BOUND = 4.0
+POSTERIOR_LOGVAR_BOUND: Final = 4.0
 """Symmetric soft bound on the log-variance from the inference path."""
+PRIOR_LOGVAR_MAX: Final = 2.0
+"""Soft upper bound on the log-variance from the top-down prior."""
+PRIOR_LOGVAR_MIN: Final = -4.0
+"""Soft lower bound, low enough that a stage the model has given up adds almost no noise."""
 
 
-class Abstract_VAE(nn.Module, abc.ABC):
-    """Abstract base interface for hierarchical VAE architectures."""
+class LatentStage(nn.Module):
+    """Stage of the decoder: a change of resolution, then a latent drawn at the new one.
 
-    n_channels: int
-    dim_target: int
-    x_dim: int
-    z_dims: tuple[int, ...]
-    sampling_variance: tuple[float, ...]
-    posterior_weight_multiplier: float
-    cf_strength: float
-    z_cond_dim: int
-    reversal_strength: float
-    eraser_hidden: int
+    Attributes:
+        decode: residual block changing the resolution.
+        generate: prior of the latent, restyled by the latent above.
+        merge: convolution joining the decoder and the encoder features.
+        inference: shift of the posterior from the prior.
+        from_latent: upsampling of the latent added to the features.
+    """
 
-    def __init__(self) -> None:
-        super().__init__()
-        exp_cfg = Experiment.get_config()
-        self.n_channels = exp_cfg.data.n_channels
-        self.dim_target = len(exp_cfg.data.dataset.classes)
-        self.x_dim = exp_cfg.data.x_dim
-        self.z_dims = exp_cfg.autoencoder.model.z_dims
-        self.sampling_variance = exp_cfg.autoencoder.objective.sampling_variance
-        self.posterior_weight_multiplier = exp_cfg.autoencoder.objective.posterior_weight_multiplier
-        self.cf_strength = exp_cfg.autoencoder.objective.cf_strength
-        self.z_cond_dim = exp_cfg.autoencoder.model.z_cond_dim
-        self.reversal_strength = exp_cfg.autoencoder.objective.reversal_strength
-        self.eraser_hidden = exp_cfg.autoencoder.objective.eraser_hidden
-        return
+    decode: Final[ResBlock]
+    generate: Final[ToLatentBlock]
+    merge: Final[ConvBlock]
+    inference: Final[ToLatentBlock]
+    from_latent: Final[FromLatentConv]
 
-    @property
-    def full_posterior_weights(self) -> tuple[float, ...]:
-        """Per-stage weights that keep the entire posterior, as used for reconstruction."""
-        return (1.0,) * len(self.z_dims)
-
-    @property
-    def posterior_weights(self) -> tuple[float, ...]:
-        """Per-stage weights decaying geometrically, as configured for generation."""
-        return self.posterior_weights_from(self.posterior_weight_multiplier)
-
-    def posterior_weights_from(self, multiplier: float) -> tuple[float, ...]:
-        """Build per-stage weights on the conditioned half, decaying towards the pixels.
+    def __init__(
+        self,
+        decode: ResBlock,
+        generate: ToLatentBlock,
+        merge: ConvBlock,
+        inference: ToLatentBlock,
+        from_latent: FromLatentConv,
+    ) -> None:
+        """Initialize.
 
         Args:
-            multiplier: ratio between the weights of consecutive stages.
+            decode: residual block changing the resolution.
+            generate: prior of the latent, restyled by the latent above.
+            merge: convolution joining the decoder and the encoder features.
+            inference: shift of the posterior from the prior.
+            from_latent: upsampling of the latent added to the features.
         """
-        return tuple(multiplier ** (level + 1) for level in range(len(self.z_dims)))
+        super().__init__()
+        self.decode = decode
+        self.generate = generate
+        self.merge = merge
+        self.inference = inference
+        self.from_latent = from_latent
+        return
 
-    @property
-    @abc.abstractmethod
-    def final_z_dim(self) -> int:
-        """Final latent dimension size."""
 
-    @property
+class BaseAutoencoder(nn.Module, abc.ABC):
+    """Abstract base for all autoencoder model architectures.
+
+    Attributes:
+        x_dim: Resolution of input images.
+        n_channels: Number of input channels.
+        h_dims: Feature channels at each resolution stage.
+        k_dims: Kernel sizes of the resolution changes.
+        strides: Strides of the resolution changes.
+        paddings: Paddings of the resolution changes.
+        depths: Residual layers before each resolution change.
+        z_dims: Latent dimensions per stage.
+        act_cls: Activation class of the layers.
+        norm_cls: Normalization class of the layers.
+        bn_momentum: Momentum for batch normalization.
+        bn_eps: Epsilon for batch normalization.
+        eval_std_divisor: Standard deviation divisor in evaluation mode.
+    """
+
+    x_dim: Final[int]
+    n_channels: Final[int]
+    h_dims: Final[tuple[int, ...]]
+    k_dims: Final[tuple[int, ...]]
+    strides: Final[tuple[int, ...]]
+    paddings: Final[tuple[int, ...]]
+    depths: Final[tuple[int, ...]]
+    z_dims: Final[tuple[int, ...]]
+    act_cls: Final[ActClass]
+    norm_cls: Final[NormClass]
+    bn_momentum: Final[float]
+    bn_eps: Final[float]
+    eval_std_divisor: Final[float]
+
+    def __init__(self) -> None:
+        """Initialize."""
+        super().__init__()
+        cfg = Experiment.get_config()
+        cfg_model = cfg.autoencoder.model
+        arch = cfg_model.architecture
+        self.x_dim = cfg.data.x_dim
+        self.n_channels = cfg.data.n_channels
+        self.h_dims = arch.h_dims
+        self.k_dims = arch.k_dims
+        self.strides = arch.strides
+        self.paddings = arch.paddings
+        self.depths = arch.depths
+        self.z_dims = cfg_model.z_dims
+        self.act_cls = arch.act_cls
+        self.norm_cls = arch.norm_cls
+        self.bn_momentum = arch.bn_momentum
+        self.bn_eps = arch.bn_eps
+        self.eval_std_divisor = cfg_model.eval_std_divisor
+        return
+
     @abc.abstractmethod
-    def final_res(self) -> int:
-        """Final spatial resolution."""
+    def forward(self, inputs: Inputs, /) -> Outputs:
+        """Run forward pass."""
+
+    @abc.abstractmethod
+    def reconstruct(self, inputs: Inputs, /, relaxation: float = 1.0) -> Outputs:
+        """Reconstruct the inputs under the condition of the classifier."""
+
+
+class BaseVAEX(BaseAutoencoder, abc.ABC):
+    """Abstract base for explainable VAEs conditioned on classifier probabilities.
+
+    Attributes:
+        n_classes: Number of target classes.
+        inference_block: Variant of the inference block.
+        centering_steps: Number of centering steps for classifier probabilities.
+        prior_scale: Prior mean scale of top latent conditioning channel.
+    """
+
+    n_classes: Final[int]
+    inference_block: Final[InferenceBlock]
+    centering_steps: Final[int]
+    prior_scale: Final[float]
+
+    def __init__(self) -> None:
+        """Initialize."""
+        super().__init__()
+        cfg = Experiment.get_config()
+        cfg_model = cfg.autoencoder.model
+        arch = cfg_model.architecture
+        self.n_classes = len(cfg.data.dataset.classes)
+        self.inference_block = arch.inference_block
+        self.centering_steps = cfg_model.centering_steps
+        self.prior_scale = cfg.autoencoder.objective.prior_scale
+        return
+
+    @abc.abstractmethod
+    def generate_counterfactual(self, image: torch.Tensor, target: int, relaxation: float) -> Outputs:
+        """Generate counterfactual reconstructions."""
 
     @abc.abstractmethod
     def condition_from(self, inputs: Inputs) -> torch.Tensor:
-        """Derive the (batch, dim_target) conditioning vector for the given inputs."""
+        """Get the condition from inputs holding the log-probabilities of the classifier."""
 
     @abc.abstractmethod
-    def sample_condition(self, batch_size: int = 1) -> torch.Tensor:
-        """Sample a random condition tensor."""
+    def generate(self, condition: torch.Tensor, /) -> torch.Tensor:
+        """Generate images under a condition, sampling every latent from its prior."""
 
     @abc.abstractmethod
-    def encode(self, x: torch.Tensor) -> Outputs:
-        """Encode input into latent space."""
+    def get_random_condition(self, batch_size: int) -> torch.Tensor:
+        """Get the condition of random probabilities of the classes for each sample."""
 
     @abc.abstractmethod
-    def decode(
-        self,
-        out: Outputs,
-        condition: torch.Tensor,
-        posterior_weights: tuple[float, ...],
-        free_weights: tuple[float, ...] | None = None,
-        free_shift: tuple[torch.Tensor, ...] | None = None,
-    ) -> Outputs:
-        """Decode latent space into reconstruction.
-
-        Args:
-            out: encoder output, or an empty instance to decode from the priors alone.
-            condition: conditioning vector parameterising the root prior.
-            posterior_weights: per-stage weight on the posterior offsets, one entry per
-                latent stage. ``1.0`` keeps the stage posterior, ``0.0`` falls back to
-                the stage prior.
-        """
-
-    def forward(self, inputs: Inputs, **kwargs) -> Outputs:
-        x = inputs.image
-        condition = self.condition_from(inputs)
-        out = self.encode(x)
-        out = self.decode(out, condition, self.full_posterior_weights)
-        out.image = x
-        out.condition = condition
-        out.logits = inputs.log_probs if inputs.log_probs.numel() > 0 else condition.clamp_min(1e-8).log()
-        return out
-
-    def generate_counterfactual(
-        self,
-        inputs: Inputs,
-        target_dim: int = 0,
-        posterior_weights: tuple[float, ...] | None = None,
-        free_weights: tuple[float, ...] | None = None,
-        free_shift: tuple[torch.Tensor, ...] | None = None,
-    ) -> Outputs:
-        """Generate a counterfactual sample for the given inputs and target class.
-
-        Args:
-            inputs: batch to intervene on.
-            target_dim: class the root prior is conditioned on.
-            posterior_weights: per-stage weight on the posterior offsets; defaults to the
-                decaying weights configured for generation.
-        """
-        if not 0 <= target_dim < self.dim_target:
-            raise ValueError(f'target_dim {target_dim} outside [0, {self.dim_target})')
-
-        if posterior_weights is None:
-            posterior_weights = self.posterior_weights
-
-        x = inputs.image
-        orig_condition = self.condition_from(inputs)
-        target = torch.zeros((x.size(0), self.dim_target), device=x.device, dtype=x.dtype)
-        target[:, target_dim] = 1.0
-        cf_condition = (1.0 - self.cf_strength) * orig_condition + self.cf_strength * target
-        out = self.encode(x)
-        out = self.decode(out, cf_condition, posterior_weights, free_weights, free_shift)
-        out.image = x
-        out.condition = cf_condition
-        return out
-
-    @torch.inference_mode()
-    def generate_sample(
-        self,
-        batch_size: int = 1,
-        condition: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        """Generate random sample for given batch size and condition."""
-        if condition is None:
-            condition = self.sample_condition(batch_size)
-
-        # No encoder output, so every stage falls back to its prior and the weights are
-        # inert; the root prior is what makes the sample class-controlled.
-        out = Outputs()
-        out.hidden = []
-        return self.decode(
-            out, condition.to(next(self.parameters()).device), self.full_posterior_weights
-        ).recon
-
-    @staticmethod
-    def _half_weight(
-        reference: torch.Tensor, cond_width: int, weight: float, free_weight: float = 1.0
-    ) -> torch.Tensor:
-        """Weight the conditioned half of a stage and leave the free half at one.
-
-        Args:
-            reference: the stage offset, used for width, dtype and device.
-            cond_width: flat width of the conditioned half.
-            weight: weight to apply there.
-            free_weight: weight to apply to the free half.
-        """
-        half = reference.new_ones((1, reference.size(1)))
-        half[:, :cond_width] = weight
-        half[:, cond_width:] = free_weight
-        return half
-
-    def sampling(self, mu: torch.Tensor, log_var: torch.Tensor, temperature: float = 1.0) -> torch.Tensor:
-        std = torch.exp(0.5 * log_var)
-        eps = torch.randn_like(std)
-        z = eps.mul(std).add_(mu) if self.training else eps.mul(std * temperature).add_(mu)
-        return z
+    def get_target_condition(self, target: int, batch_size: int) -> torch.Tensor:
+        """Get the condition of a class, a probability of one for it."""
 
 
-class BVAE(Abstract_VAE, abc.ABC):
-    """Abstract base class for hierarchical VAE architectures handling network layers and dimension calculations."""
+class VAEX(BaseVAEX):
+    """Hierarchical VAE conditioned on the probability that a classifier assigns to a sample.
 
-    h_dims: tuple[int, ...]
-    k_dims: tuple[int, ...]
-    strides: tuple[int, ...]
-    paddings: tuple[int, ...]
-    c_z_dims: list[int]
-    depths: tuple[int, ...]
-    l_dims_encoder: list[int]
-    l_dims_decoder: list[int]
-    resolutions: list[int]
-    flat_dim: int
-    act_cls: type[nn.Module] | None
-    inference_block: InferenceBlock
-    final_inference: ToLatentBlock
+    The condition enters as an extra channel of the image and as an extra channel of the top
+    latent, whose first channel has the condition, scaled, as prior mean. Counterfactuals set
+    condition and channel to a target, and relax the posterior of the lower latents.
+
+    Attributes:
+        top_channel_dim: Size of a channel of the top latent, flattened.
+        condition_to_image: Map from the condition to an extra image channel.
+        condition_to_latent: Map from the condition to an extra channel of the top latent.
+        initial_convolution: Map from the image and its condition to the first features.
+        encoding: Residual blocks of the encoder.
+        final_inference: Posterior of the top latent.
+        init_decoder: Learned features the top latent is added to.
+        from_latent: Upsampling of the top latent and its condition.
+        decoding: Stages of the decoder, from the top.
+        final_convolution: Map from the last features to the image.
+    """
+
+    top_channel_dim: Final[int]
+    condition_to_image: Final[nn.Sequential]
+    condition_to_latent: Final[nn.Sequential]
+    initial_convolution: Final[nn.Conv2d]
+    encoding: Final[nn.ModuleList]
+    final_inference: Final[ToLatentBlock]
+    init_decoder: Final[nn.Parameter]
+    from_latent: Final[FromLatentConv]
+    decoding: Final[nn.ModuleList]
+    final_convolution: Final[nn.Sequential]
 
     def __init__(self) -> None:
+        """Initialize."""
         super().__init__()
-        exp_cfg = Experiment.get_config()
-        vae_arch = exp_cfg.autoencoder.model.architecture
-        self.h_dims = vae_arch.h_dims
-        self.k_dims = vae_arch.k_dims
-        self.strides = vae_arch.strides
-        self.paddings = vae_arch.paddings
-        self.depths = vae_arch.depths
-        self.act_cls = vae_arch.act_cls
-        self.inference_block = vae_arch.inference_block
-        self.l_dims_encoder, self.l_dims_decoder, self.flat_dim = self.size_calc()
-        *self.c_z_dims, _ = self.z_dims
-        *self.resolutions, _ = self.l_dims_encoder
-        self._build_encoder_layers()
-        self._build_decoder_layers()
-        return
-
-    @property
-    @override
-    def final_z_dim(self) -> int:
-        return self.z_dims[-1]
-
-    @property
-    @override
-    def final_res(self) -> int:
-        return self.l_dims_encoder[-1]
-
-    @property
-    def flat_z_dim(self) -> int:
-        """Flat width of the root latent."""
-        return self.final_z_dim * ((self.final_res + 1) // 2) ** 2
-
-    @property
-    def flat_z_free_dim(self) -> int:
-        """Flat width of the unconditioned root latent."""
-        return self.flat_z_dim - self.flat_z_cond_dim
-
-    @property
-    def flat_z_cond_dim(self) -> int:
-        """Flat width of the conditioned root latent."""
-        return self.z_cond_dim * ((self.final_res + 1) // 2) ** 2
-
-    def _build_encoder_layers(self) -> None:
-        self.initial_convolution = nn.Conv2d(self.n_channels, self.h_dims[0], 1, bias=False)
-        self.encoding = nn.ModuleList([])
-        for (h_in, h_out), k_dim, stride, padding, depth in zip(
-            itertools.pairwise(self.h_dims), self.k_dims, self.strides, self.paddings, self.depths, strict=False
-        ):
-            encode = ResBlock(
-                ConvBlock,
-                h_in,
-                h_out,
-                k_dim,
-                stride,
-                padding,
-                deconv=False,
-                depth=depth,
-            )
-            self.encoding.append(encode)
-
-        if self.inference_block == InferenceBlock.Mobile:
-            self.final_inference = ToLatentConvMobile(self.h_dims[-1], self.final_z_dim, self.final_res, 0)
-        else:
-            self.final_inference = ToLatentConvADAIN(self.h_dims[-1], self.final_z_dim, self.final_res, 0)
-
-        return
-
-    def _build_decoder_layers(self) -> None:
-        self.root_prior_cond = LinearLayer(self.dim_target, 2 * self.flat_z_cond_dim, use_trunc_init=True)
-        self.root_prior_free = nn.parameter.Parameter(torch.zeros(1, 2 * self.flat_z_free_dim))
-        # Both the mean and the log-variance of the free half, so that class information
-        # cannot sidestep the adversary by moving into the noise scale.
-        self.information_eraser = InformationEraser(
-            in_dim=2 * self.flat_z_free_dim,
-            n_classes=self.dim_target,
-            reversal_strength=self.reversal_strength,
-            intermediate_dim=self.eraser_hidden,
+        norm = get_batch_norm(self.bn_momentum, self.bn_eps, self.norm_cls)
+        to_latent_cls = ToLatentConvMobile if self.inference_block == InferenceBlock.MOBILE else ToLatentConvADAIN
+        resolutions = self._get_resolutions()
+        top_res = resolutions[-1]
+        top_z_dim = self.z_dims[-1]
+        self.top_channel_dim = ((top_res + 1) // 2) ** 2
+        condition_dim = self.n_classes - 1
+        self.condition_to_image = nn.Sequential(
+            nn.Linear(condition_dim, self.x_dim**2),
+            nn.ELU(),
+            nn.Unflatten(1, (1, self.x_dim, self.x_dim)),
         )
-        self.h = nn.parameter.Parameter(torch.ones(1, self.h_dims[-1], self.final_res, self.final_res))
-        self.back_to_img = FromLatentConv(self.h_dims[-1], self.final_z_dim, self.final_res)
-        self.decode_list = nn.ModuleList([])
-        self.inference_list = nn.ModuleList([])
-        self.generate_cond_list = nn.ModuleList([])
-        self.generate_free_list = nn.ModuleList([])
-        self.information_erasers = nn.ModuleList([])
-        self.from_latent_list = nn.ModuleList([])
-        self.merge = nn.ModuleList([])
-        aux_dim = self.final_z_dim
-        for (h_in, h_out), k_dim, stride, padding, z_dim, res, depth in zip(
+        self.condition_to_latent = nn.Sequential(nn.Linear(condition_dim, self.top_channel_dim), nn.ELU())
+        self.initial_convolution = nn.Conv2d(self.n_channels + 1, self.h_dims[0], 1, bias=False)
+        self.encoding = self._get_encoding(norm)
+        self.final_inference = to_latent_cls(self.h_dims[-1], top_z_dim, top_res, act_cls=self.act_cls, norm=norm)
+        self.init_decoder = nn.Parameter(torch.ones(1, self.h_dims[-1], top_res, top_res))
+        self.from_latent = FromLatentConv(self.h_dims[-1], top_z_dim + 1, top_res, act_cls=self.act_cls, norm=norm)
+        self.decoding = self._get_decoding(norm, to_latent_cls, resolutions)
+        self.final_convolution = nn.Sequential(
+            ConvBlock(self.h_dims[0], self.n_channels, act_cls=self.act_cls, norm=norm),
+            nn.Sigmoid(),
+        )
+        return
+
+    @property
+    def device(self) -> torch.device:
+        """The device of the parameters."""
+        return self.init_decoder.device
+
+    @override
+    def forward(self, inputs: Inputs, /) -> Outputs:
+        """Reconstruct the images under the condition of the classifier."""
+        return self.reconstruct(inputs)
+
+    @override
+    def extra_repr(self) -> str:
+        return f'centering_steps={self.centering_steps}, eval_std_divisor={self.eval_std_divisor}'
+
+    @override
+    def condition_from(self, inputs: Inputs) -> torch.Tensor:
+        """Get the centered probabilities of all classes but the last.
+
+        Each centering applies ``(sqrt(p) - sqrt(1 - p) + 1) / 2``, which keeps 0, 1/2 and 1.
+
+        Args:
+            inputs: inputs holding the log-probabilities of the classifier.
+
+        Returns:
+            The condition, of shape ``(B, n_classes - 1)``.
+
+        Raises:
+            ValueError: if the inputs have no log-probabilities.
+        """
+        if inputs.log_probs.numel() == 0:
+            raise ValueError('The inputs need the log-probabilities of the classifier.')
+
+        return self._center(inputs.log_probs.exp())
+
+    @override
+    def generate_counterfactual(self, image: torch.Tensor, target: int, relaxation: float) -> Outputs:
+        """Generate counterfactuals of the images for a target class.
+
+        The target conditions both the encoder and the decoder, and sets the conditioned channel
+        of the top latent; ``relaxation`` scales the posterior shifts of the lower latents.
+
+        Args:
+            image: the images.
+            target: the class the counterfactuals aim at.
+            relaxation: weight of the posterior, from 1 (reconstruction) to 0 (prior only).
+
+        Returns:
+            The counterfactuals in ``recon``.
+        """
+        condition = self.get_target_condition(target, len(image))
+        encoding = self.encode(image, condition)
+        z = encoding.z.clone()
+        z[:, : condition.size(1) * self.top_channel_dim] = self._get_top_shift(condition)
+        outputs = self.decode(z, condition, encoding.hidden, relaxation=relaxation)
+        return outputs
+
+    def decode(
+        self,
+        z: torch.Tensor,
+        condition: torch.Tensor,
+        hidden: tuple[torch.Tensor, ...] | None,
+        relaxation: float = 1.0,
+    ) -> Outputs:
+        """Decode the top latent under a condition.
+
+        Args:
+            z: sample of the top latent, flattened.
+            condition: the condition.
+            hidden: features of the encoder, from the coarsest; ``None`` samples the latents from
+                their priors.
+            relaxation: weight of the posterior shift of the first stage, of its mean and of its
+                log-variance, squared at each stage; ``0`` samples the lower latents from their priors.
+
+        Returns:
+            The reconstruction, the prior mean of the top latent and, with the encoder features,
+            the posterior shifts and the prior log-variances of the stages.
+        """
+        mus: list[torch.Tensor] = []
+        log_vars: list[torch.Tensor] = []
+        prior_log_vars: list[torch.Tensor] = []
+        prior_mu = self._get_prior_mu(condition, z)
+        z = torch.cat([z, self.condition_to_latent(condition)], dim=1)
+        x = self.from_latent(z, self.init_decoder.expand(z.size(0), -1, -1, -1))
+        for i, stage in enumerate(cast(list[LatentStage], list(self.decoding))):
+            x = stage.decode(x)
+            p_mu, p_log_var = stage.generate(x, z)
+            p_log_var = soft_clamp(p_log_var, PRIOR_LOGVAR_MIN, PRIOR_LOGVAR_MAX)
+            if hidden is None:
+                z = self.sample(p_mu, p_log_var)
+            else:
+                d_mu, d_log_var = stage.inference(stage.merge(torch.cat([x, hidden[i]], dim=1)))
+                d_log_var = soft_clamp(d_log_var, -POSTERIOR_LOGVAR_BOUND, POSTERIOR_LOGVAR_BOUND)
+                z = self.sample(relaxation * d_mu + p_mu, relaxation * d_log_var + p_log_var)
+                mus.append(d_mu)
+                log_vars.append(d_log_var)
+                prior_log_vars.append(p_log_var)
+
+            x = stage.from_latent(z, x)
+            relaxation *= relaxation
+
+        recon = self.final_convolution(x)
+        return Outputs(recon, prior_mu, mu=mus, log_var=log_vars, prior_log_var=prior_log_vars)
+
+    def encode(self, image: torch.Tensor, condition: torch.Tensor) -> Encoding:
+        """Encode the images under a condition.
+
+        Args:
+            image: the images.
+            condition: the condition.
+
+        Returns:
+            The top latent with its posterior, and the features at each resolution.
+        """
+        x = self.initial_convolution(torch.cat([image, self.condition_to_image(condition)], dim=1))
+        hidden: list[torch.Tensor] = []
+        for encode in self.encoding:
+            hidden.append(x)
+            x = encode(x)
+
+        mu, log_var = self.final_inference(x)
+        log_var = soft_clamp(log_var, -POSTERIOR_LOGVAR_BOUND, POSTERIOR_LOGVAR_BOUND)
+        return Encoding(z=self.sample(mu, log_var), mu=mu, log_var=log_var, hidden=tuple(reversed(hidden)))
+
+    @override
+    def generate(self, condition: torch.Tensor, /) -> torch.Tensor:
+        """Generate images under a condition, sampling every latent from its prior.
+
+        Args:
+            condition: the condition of each image.
+
+        Returns:
+            The generated images.
+        """
+        top_dim = self.z_dims[-1] * self.top_channel_dim
+        standard = torch.zeros(len(condition), top_dim, device=self.device)
+        z = self.sample(standard, standard)  # the prior of the top latent is standard
+        z[:, : condition.size(1) * self.top_channel_dim] = self._get_top_shift(condition)
+        return self.decode(z, condition, None).recon
+
+    @override
+    def get_random_condition(self, batch_size: int) -> torch.Tensor:
+        """Get the condition of random probabilities of the classes for each sample.
+
+        The probabilities are uniform over all distributions on the classes, so that a sample
+        can be of a class, of another, or in between, as ``(0.5, 0.5)``.
+
+        Args:
+            batch_size: number of samples.
+
+        Returns:
+            The condition, of shape ``(B, n_classes - 1)``, on the device of the parameters.
+        """
+        concentration = torch.ones(self.n_classes, device=self.device)
+        probabilities = torch.distributions.Dirichlet(concentration).sample((batch_size,))
+        return self._center(probabilities)
+
+    @override
+    def get_target_condition(self, target: int, batch_size: int) -> torch.Tensor:
+        """Get the condition of a class, a probability of one for it.
+
+        Args:
+            target: the class.
+            batch_size: number of samples.
+
+        Returns:
+            The condition, one-hot on all classes but the last, on the device of the parameters.
+        """
+        condition = torch.zeros(batch_size, self.n_classes - 1, device=self.device)
+        if target < self.n_classes - 1:
+            condition[:, target] = 1
+
+        return condition
+
+    @override
+    def reconstruct(self, inputs: Inputs, /, relaxation: float = 1.0) -> Outputs:
+        """Reconstruct the images under the condition of the classifier.
+
+        Args:
+            inputs: the images and the log-probabilities of the classifier.
+            relaxation: weight of the posterior of the lower latents; ``1`` reconstructs the
+                images, ``0`` gives their simple cut, the decoding with no posterior shift.
+
+        Returns:
+            The reconstructions, with the posteriors and the priors.
+        """
+        condition = self.condition_from(inputs)
+        encoding = self.encode(inputs.image, condition)
+        outputs = self.decode(encoding.z, condition, encoding.hidden, relaxation=relaxation)
+        outputs.mu.insert(0, encoding.mu)
+        outputs.log_var.insert(0, encoding.log_var)
+        return outputs
+
+    def sample(self, mu: torch.Tensor, log_var: torch.Tensor) -> torch.Tensor:
+        """Sample a Gaussian, with a smaller standard deviation in evaluation mode.
+
+        Args:
+            mu: the mean.
+            log_var: the log-variance.
+
+        Returns:
+            The sample.
+        """
+        std = torch.exp(0.5 * log_var)
+        if not self.training:
+            std = std / self.eval_std_divisor
+
+        return mu + torch.randn_like(std) * std
+
+    def _center(self, probabilities: torch.Tensor) -> torch.Tensor:
+        # the condition holds all classes but the last, which the others imply
+        condition = probabilities[:, :-1]
+        for _ in range(self.centering_steps):
+            condition = (condition.sqrt() - (1 - condition).sqrt() + 1) / 2
+
+        return condition
+
+    def _get_prior_mu(self, condition: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
+        prior_mu = torch.zeros_like(z)
+        prior_mu[:, : condition.size(1) * self.top_channel_dim] = self._get_top_shift(condition)
+        return prior_mu
+
+    def _get_encoding(self, norm: NormFactory) -> nn.ModuleList:
+        encoding = nn.ModuleList()
+        widths = itertools.pairwise(self.h_dims)
+        zipped = zip(widths, self.k_dims, self.strides, self.paddings, self.depths, strict=True)
+        for (h_in, h_out), k_dim, stride, padding, depth in zipped:
+            encoding.append(
+                ResBlock(
+                    h_in,
+                    h_out,
+                    act_cls=self.act_cls,
+                    norm=norm,
+                    kernel_size=k_dim,
+                    stride=stride,
+                    padding=padding,
+                    depth=depth,
+                )
+            )
+
+        return encoding
+
+    def _get_resolutions(self) -> list[int]:
+        resolutions = [self.x_dim]
+        for k_dim, stride, padding in zip(self.k_dims, self.strides, self.paddings, strict=True):
+            resolutions.append((resolutions[-1] + 2 * padding - k_dim) // stride + 1)
+
+        return resolutions
+
+    def _get_decoding(
+        self,
+        norm: NormFactory,
+        to_latent_cls: type[ToLatentConvADAIN] | type[ToLatentConvMobile],
+        resolutions: list[int],
+    ) -> nn.ModuleList:
+        *stage_z_dims, top_z_dim = self.z_dims
+        decoding = nn.ModuleList()
+        aux_dim = top_z_dim + 1
+        zipped_stages = zip(
             itertools.pairwise(reversed(self.h_dims)),
             reversed(self.k_dims),
             reversed(self.strides),
             reversed(self.paddings),
-            reversed(self.c_z_dims),
-            reversed(self.resolutions),
+            reversed(stage_z_dims),
+            reversed(resolutions[:-1]),
             reversed(self.depths),
-            strict=False,
-        ):
-            decode = ResBlock(
-                ConvBlock,
+            strict=True,
+        )
+        for (h_in, h_out), k_dim, stride, padding, z_dim, res, depth in zipped_stages:
+            settings = (k_dim, stride, padding, z_dim, res, depth, aux_dim)
+            stage = self._get_stage(h_in, h_out, *settings, norm, to_latent_cls)
+            decoding.append(stage)
+            aux_dim = z_dim
+
+        return decoding
+
+    def _get_stage(
+        self,
+        h_in: int,
+        h_out: int,
+        k_dim: int,
+        stride: int,
+        padding: int,
+        z_dim: int,
+        res: int,
+        depth: int,
+        aux_dim: int,
+        norm: NormFactory,
+        to_latent_cls: type[ToLatentConvADAIN] | type[ToLatentConvMobile],
+    ) -> LatentStage:
+        return LatentStage(
+            decode=ResBlock(
                 h_in,
                 h_out,
-                k_dim,
-                stride,
-                padding,
+                act_cls=self.act_cls,
+                norm=norm,
+                kernel_size=k_dim,
+                stride=stride,
+                padding=padding,
                 deconv=True,
                 depth=depth,
-            )
-            self.decode_list.append(decode)
-            if z_dim:
-                from_latent = FromLatentConv(h_out, z_dim, res)
-                inference: ToLatentBlock
-                generate_cond: ToLatentBlock
-                generate_free: ToLatentBlock
-                eraser: nn.Module
-                
-                if self.inference_block == InferenceBlock.Mobile:
-                    inference = ToLatentConvMobile(h_out, z_dim, res, cond_dim=self.dim_target)
-                else:
-                    inference = ToLatentConvADAIN(h_out, z_dim, res, cond_dim=self.dim_target)
-                
-                z_cond_dim_stage = min((z_dim + 1) // 2, self.z_cond_dim)
-                z_free_dim_stage = z_dim - z_cond_dim_stage
-                block = ToLatentConvMobile if self.inference_block == InferenceBlock.Mobile else ToLatentConvADAIN
-                generate_cond = (
-                    block(h_out, z_cond_dim_stage, res, aux_dim, cond_dim=self.dim_target)
-                    if z_cond_dim_stage
-                    else NullOp()
-                )
-                generate_free = (
-                    block(h_out, z_free_dim_stage, res, aux_dim, cond_dim=0)
-                    if z_free_dim_stage
-                    else NullOp()
-                )
-                in_dim = 2 * z_free_dim_stage * (((res + 1) // 2) ** 2)
-                eraser = (
-                    InformationEraser(
-                        in_dim=in_dim,
-                        n_classes=self.dim_target,
-                        reversal_strength=self.reversal_strength,
-                        intermediate_dim=self.eraser_hidden,
-                    )
-                    if in_dim
-                    else NullOp()
-                )
-
-                merge = ConvBlock(2 * h_out, h_out)
-                self.inference_list.append(inference)
-                self.generate_cond_list.append(generate_cond)
-                self.generate_free_list.append(generate_free)
-                self.information_erasers.append(eraser)
-                self.from_latent_list.append(from_latent)
-                self.merge.append(merge)
-            else:
-                self.inference_list.append(NullOp())
-                self.generate_cond_list.append(NullOp())
-                self.generate_free_list.append(NullOp())
-                self.information_erasers.append(NullOp())
-                self.from_latent_list.append(NullOp())
-                self.merge.append(NullOp())
-
-            aux_dim = z_dim or 0
-
-        self.final_convolution = ConvBlock(self.h_dims[0], self.n_channels, use_trunc_init=True)
-        return
-
-    def size_calc(self) -> tuple[list[int], list[int], int]:
-        l_dims = self.x_dim
-        l_dims_encoder = [l_dims]
-        for k_dim, stride, padding in zip(self.k_dims, self.strides, self.paddings, strict=False):
-            l_dims = self.conv_size_calc(L_in=l_dims, kernel_size=k_dim, stride=stride, padding=padding)
-            l_dims_encoder.append(l_dims)
-
-        flat_dim = self.h_dims[-1] * (l_dims_encoder[-1] ** 2)
-        l_dims_decoder = [l_dims]
-        for k_dim, stride, padding in reverse_zip(self.k_dims, self.strides, self.paddings):
-            l_dims = self.convt_size_calc(L_in=l_dims, kernel_size=k_dim, stride=stride, padding=padding)
-            l_dims_decoder.append(l_dims)
-
-        return l_dims_encoder, l_dims_decoder, flat_dim
-
-    @staticmethod
-    def conv_size_calc(L_in: int, kernel_size: int, stride: int = 1, dilation: int = 1, padding: int = 0) -> int:
-        return int((L_in + 2 * padding - dilation * (kernel_size - 1) - 1) // stride) + 1
-
-    @staticmethod
-    def convt_size_calc(
-        L_in: int,
-        kernel_size: int,
-        stride: int = 1,
-        padding: int = 0,
-        dilation: int = 1,
-        output_padding: int = 0,
-    ) -> int:
-        return (L_in - 1) * stride - 2 * padding + dilation * (kernel_size - 1) + output_padding + 1
-
-    def root_prior(self, condition: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        p_mu_cond, p_logvar_cond = self.root_prior_cond(self._process_condition(condition)).chunk(2, dim=1)
-        p_mu_free, p_logvar_free = self.root_prior_free.chunk(2, dim=1)
-        batch_size = condition.size(0)
-        p_mu_free = p_mu_free.expand(batch_size, -1)
-        p_logvar_free = p_logvar_free.expand(batch_size, -1)
-        p_mu = torch.cat([p_mu_cond, p_mu_free], dim=1)
-        p_logvar = torch.cat([p_logvar_cond, p_logvar_free], dim=1)
-        return p_mu, p_logvar
-
-    @override
-    def encode(self, x: torch.Tensor) -> Outputs:
-        out = Outputs()
-        x = self.initial_convolution(x)
-        for encode in self.encoding:
-            out.hidden.append(x)
-            x = encode(x)
-
-        d_mu, d_logvar = self.final_inference(x)
-        out.d_mu.append(d_mu)
-        out.d_logvar.append(soft_clamp(d_logvar, -POSTERIOR_LOGVAR_BOUND, POSTERIOR_LOGVAR_BOUND))
-        return out
-
-    @override
-    def decode(
-        self,
-        out: Outputs,
-        condition: torch.Tensor,
-        posterior_weights: tuple[float, ...],
-        free_weights: tuple[float, ...] | None = None,
-        free_shift: tuple[torch.Tensor, ...] | None = None,
-    ) -> Outputs:
-        free_weights = free_weights or self.full_posterior_weights
-        out.prior_mu = []
-        out.prior_log_var = []
-        out.adv_logits = []
-        stage_condition = self._process_condition(condition)
-        p_mu, p_logvar = self.root_prior(condition)
-        p_logvar = soft_clamp(p_logvar, -PRIOR_LOGVAR_BOUND, PRIOR_LOGVAR_BOUND)
-        posterior = bool(out.d_mu)
-        if posterior:
-            # p_mu + d_mu = mu, p_logvar + d_logvar = logvar
-            if free_shift is not None:
-                out.d_mu[0][:, self.flat_z_cond_dim:] += free_shift[0]
-
-            root_weight = self._half_weight(
-                out.d_mu[0], self.flat_z_cond_dim, posterior_weights[0], free_weights[0]
-            )
-            z = self.sampling(
-                root_weight * out.d_mu[0] + p_mu,
-                root_weight * out.d_logvar[0] + p_logvar,
-                temperature=self.sampling_variance[0],
-            )
-            free = slice(self.flat_z_cond_dim, None)
-            mu_free = p_mu[:, free] + out.d_mu[0][:, free]
-            logvar_free = p_logvar[:, free] + out.d_logvar[0][:, free]
-            out.adv_logits.append(self.information_eraser(torch.cat([mu_free, logvar_free], dim=1)))
-        else:
-            z = self.sampling(p_mu, p_logvar, temperature=self.sampling_variance[0])
-
-        out.prior_mu.append(p_mu)
-        out.prior_log_var.append(p_logvar)
-        h = self.h.expand(z.size(0), -1, -1, -1)
-        x = self.back_to_img(z, h)
-        zipped = zip(
-            self.decode_list, self.from_latent_list, self.generate_cond_list, self.generate_free_list, self.inference_list, self.merge, self.information_erasers, strict=False
+            ),
+            generate=to_latent_cls(h_out, z_dim, res, aux_dim, act_cls=self.act_cls, norm=norm),
+            merge=ConvBlock(2 * h_out, h_out, act_cls=self.act_cls, norm=norm),
+            inference=to_latent_cls(h_out, z_dim, res, act_cls=self.act_cls, norm=norm),
+            from_latent=FromLatentConv(h_out, z_dim, res, act_cls=self.act_cls, norm=norm),
         )
-        for level, (decode, from_latent, generate_cond, generate_free, inference, merge, eraser) in enumerate(zipped, start=1):
-            x = decode(x)
-            h = out.hidden.pop() if posterior and out.hidden else None
-            if h is not None:
-                out.hidden.insert(0, h)
 
-            if not isinstance(from_latent, NullOp):
-                temperature = self.sampling_variance[level]
-                cond_width = 0
-                mu_parts, logvar_parts = [], []
-                if not isinstance(generate_cond, NullOp):
-                    p_mu_cond, p_logvar_cond = generate_cond(x, z, stage_condition)
-                    cond_width = p_mu_cond.size(1)
-                    mu_parts.append(p_mu_cond)
-                    logvar_parts.append(p_logvar_cond)
-
-                if not isinstance(generate_free, NullOp):
-                    p_mu_free, p_logvar_free = generate_free(x, z, None)
-                    mu_parts.append(p_mu_free)
-                    logvar_parts.append(p_logvar_free)
-
-                p_mu = torch.cat(mu_parts, dim=1)
-                p_logvar = soft_clamp(torch.cat(logvar_parts, dim=1), -PRIOR_LOGVAR_BOUND, PRIOR_LOGVAR_BOUND)
-                if h is not None:
-                    h = merge(torch.cat([x, h], dim=1))
-                    d_mu, d_logvar = inference(h, condition=stage_condition)
-                    d_logvar = soft_clamp(d_logvar, -POSTERIOR_LOGVAR_BOUND, POSTERIOR_LOGVAR_BOUND)
-                    if free_shift is not None:
-                        d_mu = d_mu.clone()
-                        d_mu[:, cond_width:] += free_shift[level]
-
-                    stage_weight = self._half_weight(
-                        d_mu, cond_width, posterior_weights[level], free_weights[level]
-                    )
-                    z = self.sampling(
-                        stage_weight * d_mu + p_mu,
-                        stage_weight * d_logvar + p_logvar,
-                        temperature=temperature,
-                    )
-                    out.d_mu.append(d_mu)
-                    out.d_logvar.append(d_logvar)
-                    if not isinstance(eraser, NullOp):
-                        free_slice = slice(cond_width, None)
-                        mu_free = p_mu[:, free_slice] + d_mu[:, free_slice]
-                        logvar_free = p_logvar[:, free_slice] + d_logvar[:, free_slice]
-                        out.adv_logits.append(eraser(torch.cat([mu_free, logvar_free], dim=1)))
-                else:
-                    z = self.sampling(p_mu, p_logvar, temperature=temperature)
-
-                x = from_latent(z, x)
-                out.prior_mu.append(p_mu)
-                out.prior_log_var.append(p_logvar)
-
-        out.recon = torch.sigmoid(self.final_convolution(x))
-        return out
-
-    def _process_condition(self, condition: torch.Tensor, dtype: torch.dtype | None = None) -> torch.Tensor:
-        if condition.dim() == 1:
-            if condition.is_floating_point():
-                condition = condition.unsqueeze(1)
-            else:
-                condition = nn.functional.one_hot(condition.long(), num_classes=self.dim_target)
-
-        if condition.size(1) == 1 and self.dim_target == 2:
-            condition = torch.cat([1 - condition, condition], dim=1)
-
-        if dtype is not None:
-            condition = condition.to(dtype=dtype)
-        else:
-            condition = condition.float()
-
-        return condition
+    def _get_top_shift(self, condition: torch.Tensor) -> torch.Tensor:
+        return self.prior_scale * condition.repeat_interleave(self.top_channel_dim, dim=1)
 
 
-class CVAE(BVAE):
-    """Bottom-Up / Top-Down Hierarchical Conditional Variational Autoencoder."""
+def get_autoencoder() -> BaseVAEX:
+    """Get autoencoder architecture based on experiment config.
 
-    @override
-    def condition_from(self, inputs: Inputs) -> torch.Tensor:
-        """Use the explicit label condition carried by the inputs."""
-        condition = inputs.condition
-        if condition.numel() == 0:
-            raise ValueError('label MUST be in Inputs else fail')
-
-        return self._process_condition(condition, dtype=inputs.image.dtype)
-
-    @override
-    def sample_condition(self, batch_size: int = 1) -> torch.Tensor:
-        """Sample uniform random class."""
-        device = next(self.parameters()).device
-        random_classes = torch.randint(0, self.dim_target, (batch_size,), device=device)
-        return nn.functional.one_hot(random_classes, num_classes=self.dim_target).float()
-
-
-class VAEX(BVAE):
-    """Hierarchical VAE conditioned on the predictions of an external classifier."""
-
-    temperature: float
-
-    def __init__(self) -> None:
-        super().__init__()
-        exp_cfg = Experiment.get_config()
-        self.temperature = exp_cfg.autoencoder.model.temperature
-        return
-
-    @override
-    def condition_from(self, inputs: Inputs) -> torch.Tensor:
-        """Temper the classifier's distribution into a conditioning vector."""
-        if inputs.log_probs.numel() == 0:
-            raise ValueError('log_probs MUST be in Inputs else fail')
-
-        return torch.softmax(inputs.log_probs / self.temperature, dim=1)
-
-    @override
-    def sample_condition(self, batch_size: int = 1) -> torch.Tensor:
-        """Sample random probabilities from Dirichlet distribution."""
-        device = next(self.parameters()).device
-        alpha = torch.ones(self.dim_target, device=device)
-        return torch.distributions.Dirichlet(concentration=alpha).sample((batch_size,))
-
-
-def get_autoencoder() -> Abstract_VAE:
-    """Instantiate CVAE / VAEX model architecture based on autoencoder config selection."""
+    Returns:
+        The autoencoder module.
+    """
     cfg = Experiment.get_config()
     model_name = cfg.autoencoder.model.name
-    _REGISTRY: dict[Models, type[Abstract_VAE]] = {
-        Models.CVAE: CVAE,
+    model_map: dict[Models, type[BaseVAEX]] = {
         Models.VAEX: VAEX,
     }
-    cls = _REGISTRY.get(model_name, VAEX)
-    return cls()
+    return model_map[model_name]()

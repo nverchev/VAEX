@@ -1,17 +1,13 @@
 """Subpackage for neural network modules and layers."""
 
-from src.module.autoencoder import BVAE, CVAE, VAEX, Abstract_VAE, get_autoencoder
+from src.module.autoencoder import BaseAutoencoder, BaseVAEX, VAEX, get_autoencoder
 from src.module.classifier import BaseClassifier, get_classifier
-from src.module.layers import NullOp, ToLatentBlock
 
 __all__ = [
-    'BVAE',
-    'CVAE',
     'VAEX',
-    'Abstract_VAE',
+    'BaseAutoencoder',
     'BaseClassifier',
-    'NullOp',
-    'ToLatentBlock',
+    'BaseVAEX',
     'get_autoencoder',
     'get_classifier',
 ]

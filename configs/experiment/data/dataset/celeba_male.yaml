@@ -1,4 +1,4 @@
-name: CelebaMale
+name: celeba_male
 target_attr: Male
 classes:
   - Female

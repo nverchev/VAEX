@@ -6,7 +6,7 @@ from typing import Any, ClassVar
 import torch
 
 from src.config.experiment import Experiment
-from src.data.split import Partitions
+from src.data.split import Partitions, DataSplit
 
 
 class Singleton(type):
@@ -34,7 +34,7 @@ class DataBuilder(metaclass=Singleton):
         return
 
     @abc.abstractmethod
-    def get_split(self, partition: Partitions) -> Any:
+    def get_split(self, partition: Partitions) -> DataSplit:
         """Load partition and return a dataset split."""
 
     split = get_split

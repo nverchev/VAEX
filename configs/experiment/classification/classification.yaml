@@ -1,5 +1,5 @@
 defaults:
-  - train: default_train
+  - train: train
   - _self_
 
 name: classification

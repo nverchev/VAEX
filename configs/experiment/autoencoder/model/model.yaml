@@ -1,0 +1,8 @@
+defaults:
+  - architecture: architecture
+  - _self_
+
+name: vaex
+z_dims: [1, 2, 4, 8, 16, 32]
+centering_steps: 2
+eval_std_divisor: 3.0

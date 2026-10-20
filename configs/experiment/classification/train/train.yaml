@@ -1,0 +1,8 @@
+defaults:
+  - learn: learn
+  - early_stopping: early_stopping
+  - _self_
+
+batch_size: 32
+n_epochs: 15
+_n_subprocesses: ${user.n_subprocesses}

@@ -1,0 +1,10 @@
+defaults:
+  - scheduler: step
+  - _self_
+
+optimizer: Adam
+learning_rate: 0.001
+grad_op: null
+clip_criterion: null
+opt_settings:
+  weight_decay: 0

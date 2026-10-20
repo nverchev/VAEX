@@ -1,9 +1,11 @@
 """Environment-related configuration and utilities."""
 
 import enum
+import inspect
 import pathlib
 import shutil
 import subprocess
+import sys
 import tomllib
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -12,21 +14,41 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 with open(pathlib.Path(__file__).resolve().parent.parent.parent / 'pyproject.toml', 'rb') as f:
     pyproject = tomllib.load(f)
 
+PROJECT_NAME: str = pyproject['project']['name']
 VERSION: str = pyproject['project']['version']
+
+
+def _runs_under_debugger() -> bool:
+    if sys.gettrace() is not None or any(module in sys.modules for module in ('pydevd', 'debugpy')):
+        return True
+
+    # pdb and the debuggers built on bdb run the script inside bdb.run, also after removing their trace
+    frame = inspect.currentframe()
+    while frame is not None:
+        if frame.f_globals.get('__name__') == 'bdb':
+            return True
+
+        frame = frame.f_back
+
+    return False
+
+
+# a debugger runs the process: no data of the experiment is written
+DEBUG_MODE: bool = _runs_under_debugger()
 
 
 class EnvSettings(BaseSettings):
     """Settings loaded from environment variables or the ``.env`` file.
 
     Attributes:
-        dataset_dir: Directory containing datasets.
+        data_dir: Root directory for the datasets, shared by all versions.
+        metadata_dir: Root directory for the dataset metadata.
         root_exp_dir: Root directory for all experiment artefacts.
-        metadata_dir: Directory containing dataset metadata.
     """
 
-    dataset_dir: pathlib.Path = pathlib.Path('./datasets')
-    root_exp_dir: pathlib.Path = pathlib.Path('./experiments')
+    data_dir: pathlib.Path = pathlib.Path('./data')
     metadata_dir: pathlib.Path = pathlib.Path('./dataset_metadata')
+    root_exp_dir: pathlib.Path = pathlib.Path('./experiments')
     model_config = SettingsConfigDict(env_file='.env')
 
 

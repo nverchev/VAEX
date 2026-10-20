@@ -1,7 +1,7 @@
 defaults:
-  - train: default_train
-  - model: default_model
-  - objective: default_objective
+  - train: train
+  - model: model
+  - objective: objective
   - _self_
 
 name: vae

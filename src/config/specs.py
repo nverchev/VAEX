@@ -2,164 +2,138 @@
 
 Root config hierarchy::
 
-    AllConfig
-    ├── classification: ExperimentConfig
+    ExperimentConfig
+    ├── classification: ClassificationConfig
     │   ├── name
-    │   ├── model: ModelConfig
-    │   │   └── architecture: LinearArchitectureConfig
     │   └── train: TrainingConfig
     │       ├── learn: LearningConfig
     │       │   └── scheduler: SchedulerConfig
     │       └── early_stopping: EarlyStoppingConfig
+    ├── autoencoder: AutoencodingConfig
+    │   ├── name, train
+    │   ├── model: ModelConfig
+    │   │   └── architecture: VAEArchitectureConfig
+    │   └── objective: ObjectiveConfig
     ├── data: DataConfig
     └── user: UserSettings
         ├── trackers: TrackerList
         ├── path: PathSpecs          ← populated from .env
         └── hydra: HydraSettings     ← populated at runtime
 
-For projects with multiple subexperiments, add one ExperimentConfig per subexperiment directly to AllConfig.
 """
 
 import dataclasses
 import pathlib
 from functools import cached_property
 
-from typing import Any, Annotated, Self
+from typing import Annotated, Any, Literal, Self
 
 import torch
 
-from pydantic import Field, model_validator
+from pydantic import BeforeValidator, Field, PlainValidator, model_validator
 from pydantic.dataclasses import dataclass
 
-from src.config.environment import EnvSettings, VERSION, get_current_branch
-from src.config.torch import get_activation_cls, get_norm_cls, get_optim_cls, set_seed, DEFAULT_ACT, DEFAULT_NORM
+from src.config.environment import EnvSettings, PROJECT_NAME, VERSION, get_current_branch
+from src.config.torch import (
+    ActClass,
+    NormClass,
+    get_activation_cls,
+    get_device,
+    get_mixed_precision,
+    get_norm_cls,
+    get_optim_cls,
+    set_seed,
+)
 from src.config.options import (
     GradOp,
     ClipCriterion,
     Schedulers,
     Models,
     Datasets,
-    Conditioning,
     InferenceBlock,
 )
 
 
+ActivationClass = Annotated[ActClass, BeforeValidator(get_activation_cls)]
+Device = Annotated[torch.device | Literal['auto'], PlainValidator(get_device)]
+NormalizationClass = Annotated[NormClass, BeforeValidator(get_norm_cls)]
+MixedPrecision = Annotated[torch.dtype | None, PlainValidator(get_mixed_precision)]
+OptimizerClass = Annotated[type[torch.optim.Optimizer], BeforeValidator(get_optim_cls)]
 PositiveInt = Annotated[int, Field(ge=0)]
 StrictlyPositiveInt = Annotated[int, Field(gt=0)]
 PositiveFloat = Annotated[float, Field(ge=0)]
 
 
-@dataclass(kw_only=True)
-class BaseArchitectureConfig:
-    """Base specification for an architecture with activation and normalisation.
-
-    Attributes:
-        norm_name: The name of the normalisation layer class (e.g. 'BatchNorm2d').
-            If empty, defaults to no normalisation or a standard default.
-        act_name: The name of the activation function class (e.g. 'ReLU', 'SiLU').
-            If empty, defaults to a standard activation (e.g. SiLU).
-    """
-
-    norm_name: str = ''
-    act_name: str = ''
-
-    def __post_init__(self) -> None:
-        """Resolve activation and normalisation classes from their string names."""
-        self.act_cls = get_activation_cls(self.act_name) if self.act_name else DEFAULT_ACT
-        self.norm_cls = get_norm_cls(self.norm_name) if self.norm_name else DEFAULT_NORM
-        return
-
-
-@dataclass(kw_only=True)
-class LinearArchitectureConfig(BaseArchitectureConfig):
-    """Feedforward (linear) architecture parameters.
-
-    Attributes:
-        hidden_dims: A tuple defining the number of neurons in each hidden layer.
-            For example, (256, 128) creates two hidden layers.
-        dropout_rate: The probability of an element to be zeroed out during training.
-            Must be between 0.0 and 1.0.
-    """
-
-    hidden_dims: tuple[StrictlyPositiveInt, ...] = (256, 128)
-    dropout_rate: PositiveFloat = 0.0
-
-
-@dataclass(kw_only=True)
-class VAEArchitectureConfig(BaseArchitectureConfig):
+@dataclass(frozen=True, kw_only=True)
+class VAEArchitectureConfig:
     """Hierarchical VAE architecture parameters.
 
     Attributes:
-        n_resolutions: The number of distinct spatial resolutions in the hierarchy.
+        norm_cls: Normalization of the blocks, written by its name.
+        act_cls: Activation of the blocks, written by its name.
+        bn_momentum: Momentum of the batch normalization, higher than the PyTorch default.
+        bn_eps: Epsilon of the batch normalization.
         h_dims: The number of feature channels at each resolution stage.
+        k_dims: Kernel sizes of the resolution changes.
+        strides: Strides of the resolution changes.
+        paddings: Paddings of the resolution changes.
+        depths: Residual layers before each resolution change.
+        inference_block: Inference block: AdaIN (VAEX) or concatenation (VAEXcat).
     """
 
-    n_resolutions: StrictlyPositiveInt = 5
-    h_dims: tuple[StrictlyPositiveInt, ...] = (16, 32, 64, 128, 256, 512)
-    k_dims: tuple[StrictlyPositiveInt, ...] = (3, 3, 3, 3, 3)
-    strides: tuple[StrictlyPositiveInt, ...] = (2, 2, 2, 2, 2)
-    paddings: tuple[PositiveInt, ...] = (1, 1, 1, 1, 1)
-    depths: tuple[PositiveInt, ...] = (1, 1, 1, 1, 1)
-    conditioning: Conditioning = Conditioning.ExplicitAndLearned
-    inference_block: InferenceBlock = InferenceBlock.ADAIN
+    norm_cls: NormalizationClass
+    act_cls: ActivationClass
+    bn_momentum: PositiveFloat
+    bn_eps: PositiveFloat
+    h_dims: tuple[StrictlyPositiveInt, ...]
+    k_dims: tuple[StrictlyPositiveInt, ...]
+    strides: tuple[StrictlyPositiveInt, ...]
+    paddings: tuple[PositiveInt, ...]
+    depths: tuple[PositiveInt, ...]
+    inference_block: InferenceBlock
 
 
-@dataclass(kw_only=True)
+@dataclass(frozen=True, kw_only=True)
 class ObjectiveConfig:
-    """Specification for Autoencoder / VAE loss objective and metrics parameters.
+    """Specification for the loss of the VAE.
 
     Attributes:
-        sigma_2: Variance of the Gaussian NLL reconstruction loss.
-        posterior_weight_multiplier: Ratio between the posterior weights of consecutive latent stages.
-        cf_strength: Interpolation weight from original condition (0.0) to one-hot target class (1.0).
-        sampling_variance: Per-stage multiplier on the sampling standard deviation at inference.
-        freebits: Free-bits floor per latent stage.
-        recalibrate_bn: Whether to re-estimate BatchNorm running statistics after training.
-        reversal_strength: Multiplier for the gradient reversed in the InformationEraser layer.
-        eraser_hidden: Width of the hidden layer in the InformationEraser layer.
+        c_kld: Weight of the KL divergence against the negative log-likelihood.
+        freebits: Free bits of each latent coordinate, below which the smoothed KL divergence
+            stops decreasing.
+        prior_scale: Prior mean of the conditioned channel of the top latent for a probability of
+            one.
+        nll_momentum: Weight of the previous estimate when updating the per-pixel variance of the
+            reconstruction error.
     """
 
-    sigma_2: float = 1.0
-    posterior_weight_multiplier: float = 0.5
-    cf_strength: float = 1.0
-    sampling_variance: tuple[float, ...] = (0.0, 0.2, 0.4, 0.6, 0.8, 1.0)
-    freebits: tuple[float, ...] = (0.5, 0.25, 0.125, 0.0625, 0.03125, 0.0)
-    recalibrate_bn: bool = True
-    reversal_strength: float = 1.
-    eraser_hidden: int = 512
+    c_kld: PositiveFloat
+    freebits: PositiveFloat
+    prior_scale: PositiveFloat
+    nll_momentum: PositiveFloat
 
 
-
-@dataclass
+@dataclass(frozen=True)
 class ModelConfig:
     """Model class selector and non-architectural settings.
 
     Attributes:
         name: Model architecture variant to instantiate.
         architecture: VAEArchitectureConfig
-        z_dims: Per-stage latent dimensions; must match objective.freebits in length.
-        z_cond_dim: Conditioned channels per latent stage; the rest of the stage is free.
-        ema_decay: Exponential moving average decay rate for model weights.
-        temperature: Temperature scaling factor for logits in conditional models (e.g. VAEX).
+        z_dims: Per-stage latent dimensions, from the pixels to the top latent.
+        centering_steps: How many times the classifier probability is centered before it
+            conditions the VAE.
+        eval_std_divisor: Division of the standard deviation of the latents in evaluation mode.
     """
 
-    name: Models = Models.VAEX
-    architecture: VAEArchitectureConfig = dataclasses.field(default_factory=VAEArchitectureConfig)
-    z_dims: tuple[StrictlyPositiveInt, ...] = (1, 2, 4, 8, 16, 32)
-    z_cond_dim: PositiveInt = 1
-    ema_decay: float = 0.999
-    temperature: float = 5.0
-
-    @model_validator(mode='after')
-    def _check_root_keeps_a_free_part(self) -> Self:
-        if self.z_cond_dim >= self.z_dims[-1]:
-            msg = 'z_cond_dim ({}) must be smaller than the root z_dims[-1] ({}).'
-            raise ValueError(msg.format(self.z_cond_dim, self.z_dims[-1]))
-
-        return self
+    name: Models
+    architecture: VAEArchitectureConfig
+    z_dims: tuple[StrictlyPositiveInt, ...]
+    centering_steps: PositiveInt
+    eval_std_divisor: PositiveFloat
 
 
-@dataclass
+@dataclass(frozen=True)
 class DatasetConfig:
     """Dataset identity and paths.
 
@@ -172,15 +146,15 @@ class DatasetConfig:
         n_test_samples: Expected number of test samples.
     """
 
-    name: Datasets = Datasets.CelebaMale
-    target_attr: str = 'Male'
-    classes: list[str] = dataclasses.field(default_factory=lambda: ['Female', 'Male'])
-    n_train_samples: StrictlyPositiveInt = 162770
-    n_val_samples: StrictlyPositiveInt = 19867
-    n_test_samples: StrictlyPositiveInt = 19962
+    name: Datasets
+    target_attr: str
+    classes: list[str]
+    n_train_samples: StrictlyPositiveInt
+    n_val_samples: StrictlyPositiveInt
+    n_test_samples: StrictlyPositiveInt
 
 
-@dataclass
+@dataclass(frozen=True)
 class DataConfig:
     """Full data configuration.
 
@@ -190,13 +164,13 @@ class DataConfig:
         crop_size: Center crop size before resizing to x_dim.
     """
 
-    dataset: DatasetConfig = dataclasses.field(default_factory=DatasetConfig)
-    x_dim: StrictlyPositiveInt = 129
-    crop_size: StrictlyPositiveInt = 148
-    n_channels: StrictlyPositiveInt = 3
+    dataset: DatasetConfig
+    x_dim: StrictlyPositiveInt
+    crop_size: StrictlyPositiveInt
+    n_channels: StrictlyPositiveInt
 
 
-@dataclass
+@dataclass(frozen=True)
 class SchedulerConfig:
     """Specification for the learning-rate scheduler.
 
@@ -209,19 +183,19 @@ class SchedulerConfig:
             constructor (e.g. ``decay_steps``, ``min_decay``).
     """
 
-    function: Schedulers = Schedulers.Cosine
-    restart_interval: PositiveInt = 0
-    restart_fraction: PositiveFloat = 1.0
-    warmup_steps: PositiveInt = 0
-    settings: dict[str, Any] = dataclasses.field(default_factory=dict)
+    function: Schedulers
+    restart_interval: PositiveInt
+    restart_fraction: PositiveFloat
+    warmup_steps: PositiveInt
+    settings: dict[str, Any]
 
 
-@dataclass
+@dataclass(frozen=True)
 class LearningConfig:
     """Specification for the optimiser and learning schedule.
 
     Attributes:
-        optimizer_name: Name of a PyTorch optimiser, e.g. ``'AdamW'``.
+        optimizer: PyTorch optimizer, written by its name.
         learning_rate: Global learning rate (or per-parameter group base LR).
         scheduler: Learning-rate scheduler configuration.
         grad_op: Optional gradient pre-processing operation applied before
@@ -231,28 +205,23 @@ class LearningConfig:
             constructor (e.g. ``weight_decay``).
     """
 
-    optimizer_name: str = 'AdamW'
-    learning_rate: PositiveFloat = 1e-3
-    scheduler: SchedulerConfig = dataclasses.field(default_factory=SchedulerConfig)
-    grad_op: GradOp | None = None
-    clip_criterion: ClipCriterion | None = ClipCriterion.EMA
-    opt_settings: dict[str, Any] = dataclasses.field(default_factory=dict)
-
-    def __post_init__(self) -> None:
-        """Resolve optimizer class from name."""
-        self.optimizer_cls = get_optim_cls(self.optimizer_name)
-        return
+    optimizer: OptimizerClass
+    learning_rate: PositiveFloat
+    scheduler: SchedulerConfig
+    grad_op: GradOp | None
+    clip_criterion: ClipCriterion | None
+    opt_settings: dict[str, Any]
 
     @model_validator(mode='after')
     def _check_clip_criterion(self) -> Self:
-        if self.clip_criterion is None and self.grad_op in (GradOp.HistClipper, GradOp.ParamHistClipper):
+        if self.clip_criterion is None and self.grad_op in (GradOp.HIST_CLIPPER, GradOp.PARAM_HIST_CLIPPER):
             msg = 'Must specify clip_criterion when using HistClipper or ParamHistClipper.'
             raise ValueError(msg)
 
         return self
 
 
-@dataclass
+@dataclass(frozen=True)
 class EarlyStoppingConfig:
     """Specification for early stopping.
 
@@ -262,12 +231,12 @@ class EarlyStoppingConfig:
         patience: Epochs to wait for improvement before stopping.
     """
 
-    active: bool = False
-    window: int = 1
-    patience: int = 10
+    active: bool
+    window: int
+    patience: int
 
 
-@dataclass
+@dataclass(frozen=True)
 class TrainingConfig:
     """Specification for the training loop.
 
@@ -276,20 +245,13 @@ class TrainingConfig:
         learn: Optimiser and scheduler configuration.
         n_epochs: Maximum number of training epochs.
         early_stopping: Early stopping configuration.
-        annealing_period: Epochs over which the KL weight is annealed. Past it the weight
-            stays at one.
-        annealing_cycles: Number of times the KL weight ramps back to one within that
-            period, so that reconstruction pressure returns periodically instead of once.
     """
 
-    batch_size: StrictlyPositiveInt = 32
-    learn: LearningConfig = dataclasses.field(default_factory=LearningConfig)
-    n_epochs: StrictlyPositiveInt = 10
-    early_stopping: EarlyStoppingConfig = dataclasses.field(default_factory=EarlyStoppingConfig)
-    _n_subprocesses: PositiveInt = 0
-    annealing_period: int = 90
-    annealing_cycles: StrictlyPositiveInt = 2
-    adv_warmup_epochs: int = 3
+    batch_size: StrictlyPositiveInt
+    learn: LearningConfig
+    n_epochs: StrictlyPositiveInt
+    early_stopping: EarlyStoppingConfig
+    _n_subprocesses: PositiveInt
 
     @model_validator(mode='after')
     def _check_batch_divisibility(self) -> Self:
@@ -308,12 +270,27 @@ class TrainingConfig:
         return self.batch_size // self._n_subprocesses
 
 
-@dataclass
-class BaseExperimentConfig:
-    """Base specification for an experiment task.
+@dataclass(frozen=True)
+class AutoencoderTrainingConfig(TrainingConfig):
+    """Specification for the training loop of the VAE.
 
     Attributes:
-        name: Subexperiment identifier.
+        batch_size: Total batch size across all devices.
+        learn: Optimiser and scheduler configuration.
+        n_epochs: Maximum number of training epochs.
+        early_stopping: Early stopping configuration.
+        mixed_precision: Autocast precision, ``float16`` (with gradient scaling) or ``bfloat16``; empty for none.
+    """
+
+    mixed_precision: MixedPrecision
+
+
+@dataclass(frozen=True)
+class PhaseConfig:
+    """Base specification for an experiment phase.
+
+    Attributes:
+        name: Phase identifier.
         train: Training loop configuration.
     """
 
@@ -321,52 +298,39 @@ class BaseExperimentConfig:
     train: TrainingConfig
 
 
-@dataclass
-class ClassificationExperimentConfig(BaseExperimentConfig):
-    """Specification for a classification experiment task.
+@dataclass(frozen=True)
+class ClassificationConfig(PhaseConfig):
+    """Specification for the classifier, whose architecture is fixed."""
+
+
+@dataclass(frozen=True)
+class AutoencodingConfig(PhaseConfig):
+    """Specification for an autoencoder / VAE phase.
 
     Attributes:
-        model: Classifier model architecture configuration.
-    """
-
-    model: LinearArchitectureConfig = dataclasses.field(default_factory=LinearArchitectureConfig)
-
-
-@dataclass
-class AutoencoderExperimentConfig(BaseExperimentConfig):
-    """Specification for an autoencoder / VAE experiment task.
-
-    Attributes:
+        train: Training loop configuration, with the mixed precision of the VAE.
         model: VAE model configuration.
         objective: VAE loss objective and metrics configuration.
     """
 
-    model: ModelConfig = dataclasses.field(default_factory=ModelConfig)
-    objective: ObjectiveConfig = dataclasses.field(default_factory=ObjectiveConfig)
-
-    @model_validator(mode='after')
-    def _check_objective_tuples_match_z_dims(self) -> Self:
-        if len(self.objective.sampling_variance) != len(self.model.z_dims):
-            msg = 'sampling_variance (len {}) in objective must match z_dims (len {}) in model.'
-            raise ValueError(msg.format(len(self.objective.sampling_variance), len(self.model.z_dims)))
-
-        if len(self.objective.freebits) != len(self.model.z_dims):
-            msg = 'freebits (len {}) in objective must match z_dims (len {}) in model.'
-            raise ValueError(msg.format(len(self.objective.freebits), len(self.model.z_dims)))
-
-        return self
+    train: AutoencoderTrainingConfig
+    model: ModelConfig
+    objective: ObjectiveConfig
 
 
-@dataclass
+@dataclass(frozen=True)
 class TrackerList:
     """Flags controlling which experiment trackers are active.
 
     Attributes:
         hydra: Saves a copy of the resolved config to the Hydra output dir.
         csv: Appends metrics to a CSV file in the experiment directory.
-        tensorboard: Streams metrics to a local TensorBoard server.
-        wandb: Uploads metrics to Weights & Biases (requires ``track_all`` extra).
+        tensorboard: Writes the metrics and the images the scripts publish to TensorBoard logs.
+        wandb: Uploads the metrics and the images the scripts publish to Weights & Biases (requires ``track_all``
+            extra).
         sqlalchemy: Persists metrics in a SQLite database (requires ``track_all`` extra).
+        matplotlib: Saves the image grids the scripts publish, and a PNG figure of each metric after training.
+        plotly: Saves an HTML figure of each metric after training (requires plotly).
     """
 
     hydra: bool
@@ -374,25 +338,55 @@ class TrackerList:
     tensorboard: bool
     wandb: bool
     sqlalchemy: bool
+    matplotlib: bool
+    plotly: bool
 
 
-@dataclass
-class PlottingOptions:
-    """Options for plotting and sample visualization."""
+@dataclass(frozen=True)
+class PlottingSettings:
+    """Options for plotting and sample visualization.
 
-    sample_indices: list[int] = dataclasses.field(default_factory=list)
-    use_train: bool = False
-    n_delta: int = 5
+    Attributes:
+        sample_indices: Indices of samples in the dataset to plot.
+        use_train: Whether to draw samples from the training set instead of the test set.
+        n_delta: Number of steps of the posterior relaxation from one to zero.
+        show: Whether to also display the figures: the image grids and the learning curves.
+    """
+
+    sample_indices: list[int]
+    use_train: bool
+    n_delta: StrictlyPositiveInt
+    show: bool
 
 
-@dataclass
+@dataclass(frozen=True)
 class GenerateOptions:
-    """Options for sample generation."""
+    """Options for sample generation.
 
-    batch_size: PositiveInt = 16
+    Attributes:
+        batch_size: Number of samples generated in a batch, and of random samples the visualizations show
+            when no sample indices are given.
+    """
+
+    batch_size: PositiveInt
 
 
-@dataclasses.dataclass
+@dataclass(frozen=True)
+class EvaluationOptions:
+    """Options for the evaluation of the reconstructions and the counterfactuals.
+
+    Attributes:
+        fid_samples: Images of the evaluation partition whose reconstructions and counterfactuals
+            the FID measures, against as many other images of the same partition.
+        fid_relaxation: Weight of the posterior of the lower latents in the counterfactuals the FID
+            measures; ``0`` decodes them from the prior only.
+    """
+
+    fid_samples: StrictlyPositiveInt
+    fid_relaxation: Annotated[float, Field(ge=0, le=1)]
+
+
+@dataclasses.dataclass(frozen=True)
 class HydraSettings:
     """Subset of Hydra runtime settings, populated automatically at startup.
 
@@ -401,11 +395,11 @@ class HydraSettings:
         job_logging: Hydra job-logging DictConfig used to configure Python logging.
     """
 
-    output_dir: pathlib.Path = dataclasses.field(default_factory=pathlib.Path, init=False)
-    job_logging: Any = dataclasses.field(default=None, init=False)
+    output_dir: pathlib.Path = pathlib.Path('outputs')
+    job_logging: Any = None
 
 
-@dataclass
+@dataclass(frozen=True)
 class PathSpecs:
     """Filesystem path specifications populated from environment variables.
 
@@ -413,7 +407,6 @@ class PathSpecs:
         root_exp_dir: Root directory under which all experiment artefacts are stored.
         data_dir: Dataset directory path loaded from environment variables.
         metadata_dir: Directory containing dataset metadata.
-        source_experiment: Experiment a trained model is imported from.
 
     Note:
         Paths are loaded from the ``.env`` file via :class:`~src.config.environment.EnvSettings`.
@@ -421,9 +414,8 @@ class PathSpecs:
 
     _env = EnvSettings()
     root_exp_dir: pathlib.Path = _env.root_exp_dir
-    data_dir: pathlib.Path = _env.dataset_dir
+    data_dir: pathlib.Path = _env.data_dir
     metadata_dir: pathlib.Path = _env.metadata_dir
-    source_experiment: str = 'main'
 
     @property
     def version_dir(self) -> pathlib.Path:
@@ -431,36 +423,37 @@ class PathSpecs:
         return self.root_exp_dir / f'v{VERSION}'
 
 
-@dataclass
+@dataclass(frozen=True)
 class UserSettings:
     """User-specific runtime preferences.
 
     Attributes:
-        cpu: Force all computations onto CPU (useful for debugging).
+        device: Device where the models run. Dfaults to the available accelerator
         n_workers: DataLoader worker processes. ``0`` runs loading in the main process.
         n_subprocesses: Number of DDP processes. ``0`` disables distributed training.
         trackers: Active experiment-tracking backends.
         seed: Global random seed for reproducibility. ``None`` leaves it unset.
-        checkpoint_every: Save a model checkpoint every *n* epochs.
-        checkpoint_every: Save a model checkpoint every *n* epochs.
+        checkpoint_every: Save a model checkpoint every *n* epochs; ``0`` saves only at the end of training.
         load: Checkpoint epoch to resume from:``0`` skip; ``-1`` loads last checkpoint.
-        use_recalibrated_bn: Whether generation reads the model whose batch normalization
-            was re-estimated on the generative path. ``False`` reads the trained model
-            with the statistics training left, which is what a decoding path close to the
-            training one wants. Lives here rather than in the objective so that changing
-            it does not rename the run.
+        run_id: Run to resume; empty resumes the last run of the experiment.
+        plot: Options of the figures.
+        generate: Options of the random samples.
+        evaluation: Options of the evaluation.
+        hydra: Hydra runtime settings.
+        path: Paths of the data and the experiments.
     """
 
-    cpu: bool
+    device: Device
     n_workers: PositiveInt
     n_subprocesses: PositiveInt
     trackers: TrackerList
     seed: int | None
     checkpoint_every: PositiveInt
-    load: int = 0
-    use_recalibrated_bn: bool = True
-    plot: PlottingOptions = dataclasses.field(default_factory=PlottingOptions)
-    generate: GenerateOptions = dataclasses.field(default_factory=GenerateOptions)
+    load: int
+    run_id: str | None
+    plot: PlottingSettings
+    generate: GenerateOptions
+    evaluation: EvaluationOptions
     hydra: HydraSettings = dataclasses.field(default_factory=HydraSettings)
     path: PathSpecs = dataclasses.field(default_factory=PathSpecs)
 
@@ -471,18 +464,14 @@ class UserSettings:
 
         return
 
-    @property
-    def device(self) -> torch.device | None:
-        """Compute device: ``cpu`` when forced, ``None`` to use the default accelerator."""
-        return torch.device('cpu') if self.cpu else None
 
-
-@dataclass
-class AllConfig:
+@dataclass(frozen=True)
+class ExperimentConfig:
     """Root configuration object for all experiment settings.
 
     Attributes:
-        classification: Classification subexperiment configuration.
+        classification: Classification phase configuration.
+        autoencoder: Autoencoder phase configuration.
         user: User-specific options and runtime preferences.
         data: Data pre-processing and dataset configuration.
         final: If True, uses validation data for training and test data for evaluation.
@@ -490,12 +479,11 @@ class AllConfig:
         tags: List of tags describing active configuration overrides.
     """
 
-    classification: ClassificationExperimentConfig
-    autoencoder: AutoencoderExperimentConfig
+    classification: ClassificationConfig
+    autoencoder: AutoencodingConfig
     user: UserSettings
     data: DataConfig
     final: bool
-
     variation: str | None = None
     tags: list[str] = dataclasses.field(default_factory=list)
     version: str = dataclasses.field(default=f'v{VERSION}', init=False)
@@ -522,5 +510,5 @@ class AllConfig:
 
     @property
     def project(self) -> str:
-        """Tracker project name"""
-        return f'DrytorchTemplate{self.version}'
+        """Tracker project name, one per version."""
+        return f'{PROJECT_NAME}-{self.version}'

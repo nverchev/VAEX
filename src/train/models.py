@@ -1,166 +1,157 @@
-"""Subclasses for the Model and EMAModel classes."""
+"""Models of the experiment."""
 
-import logging
-
-from typing import cast
+from typing import Any
 
 import torch
 
-from drytorch.core import protocols as p
-from drytorch.lib.models import EMAModel, Model
+from drytorch.core.exceptions import ModelNotFoundError
+from drytorch.lib.models import Model
 
 from src.config.experiment import Experiment
 from src.data.structures import Inputs, Outputs
-from src.module.autoencoder import get_autoencoder, Abstract_VAE
+from src.module.autoencoder import BaseVAEX, get_autoencoder
 from src.module.classifier import BaseClassifier, get_classifier
-from src.module.layers import InformationEraser
-from drytorch.core import exceptions as dry_exc
-
-GENERATIVE_SUFFIX = '_bn'
-"""Suffix naming the model whose BatchNorm statistics follow the generative path."""
-
-ClassifierModel = Model[Inputs, torch.Tensor]
-"""Model wrapping a classifier that maps inputs to logits."""
-
-
-class LogEpochMixin(p.ModelProtocol[Inputs, Outputs]):
-    """Mixin that stamps the epoch into every output and scales the reversal warm-up."""
-
-    def __call__(self, inputs: Inputs) -> Outputs:
-        warmup = Experiment.get_config().autoencoder.train.adv_warmup_epochs
-        scale = min(1.0, self.epoch / warmup) if warmup > 0 else 1.0
-        for eraser in self.module.modules():
-            if isinstance(eraser, InformationEraser):
-                eraser.warmup_scale = scale
-
-        out = super().__call__(inputs)
-        out.model_epoch = self.epoch
-        return out
-
-
-class VAEModel(LogEpochMixin, Model[Inputs, Outputs]):
-    """VAE model with epoch logging."""
-
-
-class VAEEMAModel(LogEpochMixin, EMAModel[Inputs, Outputs]):
-    """VAE EMA model with epoch logging."""
-
-
-class GenerativeVAEModel(VAEModel):
-    """VAE model that decodes with the decaying posterior weights of its module.
-
-    ``Abstract_VAE.forward`` always keeps the whole posterior, which is what training
-    needs. Generation and counterfactuals instead decode with ``posterior_weights``, and
-    running that path through the model rather than through the caller lets any drytorch
-    runner drive it.
-    """
-
-    def __call__(self, inputs: Inputs) -> Outputs:
-        """Encode, then decode with the generative posterior weights."""
-        module = cast(Abstract_VAE, self.module)
-        with torch.autocast(device_type=self.device.type, enabled=self.mixed_precision):
-            condition = module.condition_from(inputs)
-            out = module.decode(module.encode(inputs.image), condition, module.posterior_weights)
-
-        out.image = inputs.image
-        out.condition = condition
-        out.model_epoch = self.epoch
-        return out
-
-
-def load_extract_autoencoder_module() -> Abstract_VAE:
-    """Load and extract the autoencoder module from the EMA model."""
-    cfg = Experiment.get_config()
-    autoencoder = get_autoencoder().eval()
-    model = VAEEMAModel(autoencoder, name=cfg.autoencoder.name, device=cfg.user.device)
-    epoch = cfg.user.load if cfg.user.load != 0 else -1
-    model.load_state(epoch)
-    module = cast(Abstract_VAE, model.averaged_module)
-    module.eval()
-    return module
-
-
-def clone_for_generation(model: VAEEMAModel) -> GenerativeVAEModel:
-    """Copy the module used at inference into a model of its own.
-
-    The weights move through a state dictionary into a freshly built module, which is
-    both lighter than a deep copy and mirrors how the checkpoint is read back. It also
-    gives the clone a distinct module, as drytorch keys its registry on module identity
-    and would refuse to register the same object twice.
-
-    Args:
-        model: the trained model whose averaged module is copied.
-
-    Returns:
-        A model of its own at the same epoch, safe to modify and save.
-    """
-    cfg = Experiment.get_config()
-    clone = GenerativeVAEModel(
-        get_autoencoder().eval(),
-        name=f'{cfg.autoencoder.name}{GENERATIVE_SUFFIX}',
-        device=model.device,
-        should_compile=False,
-        should_distribute=False,
-    )
-    clone.module.load_state_dict(model.averaged_module.state_dict())
-    clone.epoch = model.epoch
-    return clone
-
-
-def load_extract_generative_module() -> Abstract_VAE:
-    """Load the autoencoder whose batch normalization suits the generative path.
-
-    Falls back to the plain averaged module when no such model was saved, so runs that
-    predate it, or that disabled ``recalibrate_bn``, still load.
-    """
-    cfg = Experiment.get_config()
-    if not cfg.user.use_recalibrated_bn:
-        logging.info('Using the statistics training left, as requested.')
-        return load_extract_autoencoder_module()
-
-    autoencoder = get_autoencoder().eval()
-    model = VAEModel(
-        autoencoder,
-        name=f'{cfg.autoencoder.name}{GENERATIVE_SUFFIX}',
-        device=cfg.user.device,
-    )
-    epoch = cfg.user.load if cfg.user.load != 0 else -1
-    try:
-        model.load_state(epoch)
-    except (dry_exc.ModelNotFoundError, dry_exc.EpochNotFoundError):
-        logging.warning('No batch-norm recalibrated model found; using the averaged one.')
-        return load_extract_autoencoder_module()
-
-    module = cast(Abstract_VAE, model.module)
-    module.eval()
-    return module
-
-
-def load_extract_classifier_module() -> BaseClassifier:
-    """Load and extract the classifier module from the latest checkpoint."""
-    cfg = Experiment.get_config()
-    classifier = get_classifier()
-    model = ClassifierModel(classifier, name=cfg.classification.name, device=cfg.user.device)
-    try:
-        model.load_state(-1)
-    except (dry_exc.ModelNotFoundError, dry_exc.EpochNotFoundError) as err:
-        msg = f"VAEX requires a pre-trained classifier in the same experiment '{cfg.name}'."
-        raise RuntimeError(msg) from err
-
-    classifier.eval()
-    return classifier
-
 
 __all__ = [
-    'GENERATIVE_SUFFIX',
     'ClassifierModel',
-    'GenerativeVAEModel',
-    'VAEEMAModel',
     'VAEModel',
-    'clone_for_generation',
-    'load_extract_autoencoder_module',
-    'load_extract_classifier_module',
-    'load_extract_generative_module',
+    'get_autoencoder_model',
+    'get_classifier_model',
+    'load_trained_state',
 ]
 
 
+class ClassifierModel(Model[Inputs, torch.Tensor]):
+    """Model wrapping a classifier that maps inputs to logits.
+
+    Attributes:
+        module: the classifier.
+    """
+
+    module: BaseClassifier
+
+    @torch.inference_mode()
+    def log_probabilities(self, inputs: Inputs, /) -> torch.Tensor:
+        """Get the log-probabilities of the classes, in the precision of the model.
+
+        Args:
+            inputs: the images to classify.
+
+        Returns:
+            The log-probabilities, in full precision.
+        """
+        self.module.eval()
+        return torch.log_softmax(self(inputs).float(), dim=-1)
+
+    @torch.inference_mode()
+    def describe_predictions(self, images: torch.Tensor, /) -> list[str]:
+        """Describe the top class of each image and its probability, as in ``predicted 7 (0.98)``.
+
+        Args:
+            images: the images to classify.
+
+        Returns:
+            One description per image.
+        """
+        class_names = Experiment.get_config().data.dataset.classes
+        probabilities, predictions = self.log_probabilities(Inputs(image=images)).exp().max(dim=1)
+        return [
+            f'predicted {class_names[prediction]} ({probability:.2f})'
+            for prediction, probability in zip(predictions.tolist(), probabilities.tolist(), strict=True)
+        ]
+
+
+class VAEModel(Model[Inputs, Outputs]):
+    """Model wrapping the VAE.
+
+    Attributes:
+        module: the VAE.
+    """
+
+    module: BaseVAEX
+
+    @torch.inference_mode()
+    def generate_counterfactual(self, image: torch.Tensor, target: int, relaxation: float) -> Outputs:
+        """Generate counterfactuals of the images for a target class, in the precision of the model.
+
+        Args:
+            image: the images to turn towards the target.
+            target: the target class.
+            relaxation: weight of the posterior of the lower latents.
+
+        Returns:
+            The outputs, with the counterfactuals in full precision.
+        """
+        self.module.eval()
+        with self._autocast():
+            outputs = self.module.generate_counterfactual(image, target, relaxation)
+
+        outputs.recon = outputs.recon.float()
+        return outputs
+
+    @torch.inference_mode()
+    def reconstruct(self, inputs: Inputs, /) -> Outputs:
+        """Reconstruct the images, in the precision of the model.
+
+        Args:
+            inputs: the images and the log-probabilities of the classifier.
+
+        Returns:
+            The outputs, with the reconstructions in full precision.
+        """
+        self.module.eval()
+        with self._autocast():
+            outputs = self.module.reconstruct(inputs)
+
+        outputs.recon = outputs.recon.float()
+        return outputs
+
+    def _autocast(self) -> torch.autocast:
+        return torch.autocast(self.device.type, dtype=self.mixed_precision, enabled=self.mixed_precision is not None)
+
+
+def get_autoencoder_model(*, mixed_precision: torch.dtype | None = None) -> VAEModel:
+    """Get the VAE of the experiment.
+
+    Args:
+        mixed_precision: if not None, the autocast precision.
+
+    Returns:
+        The VAE, wrapped for training, evaluation and checkpointing.
+    """
+    cfg = Experiment.get_config()
+    name = cfg.autoencoder.name
+    return VAEModel(get_autoencoder(), name=name, device=cfg.user.device, mixed_precision=mixed_precision)
+
+
+def get_classifier_model() -> ClassifierModel:
+    """Get the classifier of the experiment.
+
+    Returns:
+        The classifier, wrapped for training, evaluation and checkpointing.
+    """
+    cfg = Experiment.get_config()
+    return ClassifierModel(get_classifier(), name=cfg.classification.name, device=cfg.user.device)
+
+
+def load_trained_state(model: Model[Any, Any], /, *, epoch: int = -1) -> None:
+    """Load the weights of a model trained by an earlier phase of the experiment.
+
+    Args:
+        model: the model to load.
+        epoch: the epoch to load. Default loads the last saved epoch.
+
+    Raises:
+        RuntimeError: if the experiment holds no trained model.
+    """
+    try:
+        model.load_state(epoch)
+    except ModelNotFoundError as error:
+        cfg = Experiment.get_config()
+        msg = (
+            f'No trained {model.name} for the experiment {cfg.name} in {cfg.user.path.version_dir}: '
+            'train it first with the same configuration and overrides.'
+        )
+        raise RuntimeError(msg) from error
+
+    return

@@ -1,0 +1,8 @@
+# 10 epochs at the initial learning rate, then 5 at a tenth of it
+function: step
+restart_interval: 0
+restart_fraction: 1.0
+warmup_steps: 0
+settings:
+  gamma: 0.1
+  milestones: [10]

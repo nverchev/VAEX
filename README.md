@@ -2,7 +2,11 @@
 
 Implementation of [**Hierarchical Variational Autoencoders for Visual Counterfactuals**](https://ieeexplore.ieee.org/document/9506692), ICIP 2021.
 
-This project provides a modular, type-safe implementation of VAEX using the [drytorch](https://github.com/nverchev/drytorch) engine for ML experimentation.
+This project provides a modular, type-safe implementation of VAEX using the [DRYTorch](https://github.com/nverchev/drytorch) engine for ML experimentation.
+
+This version recreates the original code in a modern style and trains the model again with the
+same settings. The [results](#results) compare the new model with the article.
+
 ---
 
 ## Overview
@@ -11,11 +15,18 @@ Visual counterfactual explanations answer the question: *"How would this image c
 
 This repository implements the **VAEX** model framework:
 
-- **Hierarchical Bottom-Up / Top-Down VAE (`BVAE`)** — a multi-scale VAE featuring resolution-aware residual layers, adaptive instance normalization (ADAIN), and free-bits Gaussian KL divergence.
-- **Conditional Attribute Manipulation (`VAEX`)** — explicit conditioning on input attribute maps ($fc_0$) and top-latent attribute maps ($fc_1$), enabling controllable generation across scaling values $s \in [0, 1]$.
-- **Decoupled Loss Objectives** — Gaussian Negative Log-Likelihood with running per-pixel variance tracking (`train_var`), free-bits KLD, and prior conditioning.
-- **Visual Counterfactual Generation** — automated generation and rendering of counterfactual image grids across target classes (e.g., `Female` vs `Male`) and scaling steps.
-- **Anomaly Detection** — evaluation of VAE reconstruction loss on classifier misclassifications versus correctly classified samples.
+- **Hierarchical Bottom-Up / Top-Down VAE** — a multi-scale VAE featuring resolution-aware residual layers, adaptive instance normalization (ADAIN), and free-bits Gaussian KL divergence.
+- **Conditional Attribute Manipulation (`VAEX`)** — explicit conditioning on input attribute maps ($fc_0$) and top-latent attribute maps ($fc_1$), in `src/module/autoencoder.py`.
+- **Decoupled Loss Objectives** — Gaussian Negative Log-Likelihood with a running estimate of the per-pixel variance, free-bits KLD, and prior conditioning.
+- **Visual Counterfactual Generation** — automated generation and rendering of counterfactual image grids across target classes (`Female` and `Male`) and relaxation steps.
+- **Posterior relaxation** — counterfactuals scale the posterior shifts of the lower latents by $r$, squared at each stage, from $r = 1$ (reconstruction) to $r = 0$ (only the top latent).
+
+The settings are those of the article: batches of 32, Adam with learning rate $10^{-3}$ decayed
+by $0.95^{\text{epoch}}$ every 10 epochs for 50 epochs, KL divergence weighted by 100 with free
+bits of 1 nat per latent coordinate (`freebits: 1.0`), prior
+mean of the conditioned channel $5\,\xi$, and probabilities centered twice with
+$f(x) = \frac{1}{2}(\sqrt{x} - \sqrt{1 - x} + 1)$. The classifier trains for 10 epochs at
+$10^{-3}$ and 5 at $10^{-4}$.
 
 ---
 
@@ -25,28 +36,27 @@ The CelebA dataset contains over 200,000 celebrity images, each with 40 attribut
 
 ### Download
 
-The dataset directory is expected at `<DATASET_DIR>/celeba_torchvision/`. The project will automatically attempt to download the dataset via `torchvision.datasets.CelebA`.
+The dataset directory is expected at `<DATA_DIR>/celeba_torchvision/`. The project will automatically attempt to download the dataset via `torchvision.datasets.CelebA`.
 
 If the automatic Google Drive download fails due to a quota error, download the files manually:
 
 | File | Google Drive link | Destination |
 |------|-------------------|-------------|
-| `img_align_celeba.zip` | [download](https://drive.google.com/uc?id=0B7EVK8r0v71pZjFTYXZWM3FlRnM) | extract to `<DATASET_DIR>/celeba_torchvision/img_align_celeba/` |
-| `list_attr_celeba.txt` | [download](https://drive.google.com/uc?id=0B7EVK8r0v71pblRyaVFSWGxPY0U) | place at `<DATASET_DIR>/celeba_torchvision/list_attr_celeba.txt` |
+| `img_align_celeba.zip` | [download](https://drive.google.com/uc?id=0B7EVK8r0v71pZjFTYXZWM3FlRnM) | extract to `<DATA_DIR>/celeba_torchvision/img_align_celeba/` |
+| `list_attr_celeba.txt` | [download](https://drive.google.com/uc?id=0B7EVK8r0v71pblRyaVFSWGxPY0U) | place at `<DATA_DIR>/celeba_torchvision/list_attr_celeba.txt` |
 
 ### Configure the data path
 
-Set the environment variable `DATASET_DIR` in a `.env` file at the project root:
+Set the paths in a `.env` file at the project root:
 
 ```dotenv
-DATASET_DIR=/path/to/your/datasets
+DATA_DIR=/path/to/your/datasets
 ROOT_EXP_DIR=./experiments
-METADATA_DIR=./dataset_metadata
 ```
 
-Alternatively, pass `data.dataset.data_dir` CLI overrides to customize the dataset path for specific runs:
+An environment variable takes precedence over the `.env` file, for example for a single run:
 ```bash
-uv run train_vae.py data.dataset.data_dir=/path/to/custom/dataset
+DATA_DIR=/path/to/custom/datasets uv run train_vae.py
 ```
 
 ---
@@ -61,7 +71,7 @@ uv sync
 
 # Optional extras
 uv sync --extra track_all   # TensorBoard, W&B, SQLAlchemy
-uv sync --extra finetune    # Optuna hyperparameter tuning
+uv sync --all-extras --dev  # everything, with the development tools
 ```
 
 ---
@@ -78,15 +88,28 @@ uv sync --extra finetune    # Optuna hyperparameter tuning
 - **Train the Hierarchical VAEX model:**
   ```bash
   uv run train_vae.py
+  uv run train_vae.py autoencoder.model.architecture.inference_block=mobile   # VAEXcat
   ```
 
-*Note: Hyperparameter tuning entry points are available via `tune_classifier.py` and `tune_vae.py`.*
+  Run every script with the same overrides, apart from `user.*`: the VAE finds the
+  classifier through the name of the run, which the overrides form.
+
+- **Reuse a trained classifier:** to train the VAE with new overrides, clone the experiment
+  of the classifier under the name the overrides form, instead of training it again:
+  ```bash
+  uv run clone_experiment.py autoencoder.train.n_epochs=100
+  uv run train_vae.py autoencoder.train.n_epochs=100
+  ```
+  `--from NAME` clones another experiment than the current variation. Clone one where only
+  the classifier was trained: a VAE trained there would share its run.
 
 ### Visualisation and Evaluation
 
-- **Generate visual counterfactuals for test samples:**
+- **Generate visual counterfactuals for test samples, or for samples the classifier gets
+  wrong:**
   ```bash
   uv run generate_counterfactuals.py
+  uv run generate_misclassified_counterfactuals.py
   ```
 
 - **Reconstruct dataset samples:**
@@ -94,7 +117,9 @@ uv sync --extra finetune    # Optuna hyperparameter tuning
   uv run reconstruct_samples.py
   ```
 
-- **Evaluate quantitative metrics and anomaly detection:**
+- **Evaluate the reconstructions (NLL, D_KL, MSE), the classifier on them, the percentage of
+  successful counterfactuals for each relaxation $r$, also of the misclassified images turned
+  towards their label, and the FID of reconstructions and counterfactuals:**
   ```bash
   uv run evaluate_counterfactuals.py
   ```
@@ -104,11 +129,50 @@ uv sync --extra finetune    # Optuna hyperparameter tuning
   uv run generate_random_samples.py
   ```
 
+- **Plot the distribution of the probability of the predicted class**, the condition of VAEX;
+  `user.plot.use_train=true` uses the training images:
+  ```bash
+  uv run plot_confidence.py final=true
+  ```
+
 - **Inspect dataset statistics and model parameters:**
   ```bash
   uv run explore_dataset.py
-  uv run profile_model.py
+  uv run profile_vae.py
   ```
+
+The scripts that draw images publish them as events: the `matplotlib` tracker saves them
+under the `images` folder of the run, and TensorBoard and W&B show them. Each sample has its
+own folder, which every script adds to:
+
+```
+test/sample_5/original.png
+test/sample_5/reconstruction.png
+test/sample_5/difference.png       # between the original and the reconstruction
+test/sample_5/counterfactuals.png  # a row per class, a column per relaxation
+```
+
+After training, the tracker also saves the learning curves under `plots`. Set
+`user.trackers.matplotlib=false` to skip them, or `user.plot.show=true` to also display them.
+Running a script under a debugger skips every tracker, so it writes no files.
+
+### Final pipeline
+
+The final models train on training and validation and are evaluated on the test partition,
+as in the [results](#results):
+
+```bash
+uv run train_classifier.py         final=true
+uv run train_vae.py                final=true
+uv run evaluate_counterfactuals.py final=true
+uv run generate_counterfactuals.py final=true
+```
+
+### Testing
+
+```bash
+uv run pytest
+```
 
 ---
 
@@ -117,34 +181,84 @@ uv sync --extra finetune    # Optuna hyperparameter tuning
 ```
 VAEX/
 ├── configs/                      # Hydra YAML configuration hierarchy
-│   ├── experiment/               # Subexperiments (classification, autoencoder, data, user)
-│   └── tuning/                   # Optuna search space definitions
-├── reference/                    # Original reference implementation (VAEX.ipynb)
+│   └── experiment/               # Phases (classification, autoencoder), data and user settings
 ├── src/
-│   ├── config/                   # Pydantic specs, options, and drytorch experiment wiring
+│   ├── config/                   # Pydantic specs, options, and DRYTorch experiment wiring
 │   ├── data/                     # CelebA dataset loading, structures
-│   ├── module/                   # Architectures (CelebaClassifier, BVAE, VAEX) and VAE layers
+│   ├── module/                   # Architectures (CelebaClassifier, VAEX) and VAE layers
+│   ├── trackers/                 # Trackers of the images the scripts publish, and of the learning curves
 │   ├── train/                    # Decoupled loss functions, metrics, learning schemas
 │   └── utils/                    # Utilities
+├── tests/                        # Unit tests
 ├── train_classifier.py           # Classifier training entrypoint
 ├── train_vae.py                  # VAE / VAEX training entrypoint
+├── clone_experiment.py           # Copy an experiment to reuse its classifier
 ├── reconstruct_samples.py        # Sample reconstruction entrypoint
 ├── generate_counterfactuals.py   # Visual counterfactual grid generator
-├── evaluate_counterfactuals.py   # Quantitative evaluation & anomaly detection
+├── generate_misclassified_counterfactuals.py  # The same grid, for samples the classifier gets wrong
+├── evaluate_counterfactuals.py   # Reconstruction metrics, counterfactual success and FID
+├── generate_random_samples.py    # Random samples from the priors
+├── explore_dataset.py            # Samples of the preprocessed dataset
+├── plot_confidence.py            # Distribution of the probability of the predicted class
+├── profile_vae.py                # Profiling of the VAE
 └── pyproject.toml
 ```
 
 ---
 
+## Differences from the original implementation
+
+The model, the loss and the counterfactuals compute what the original implementation
+computes. Technical differences:
+
+- **Training loop**: DRYTorch runs the loops, checkpoints and logs; the validation runs
+  every epoch, as in the original implementation.
+- **Images**: they are preprocessed once and cached (center crop 148, bicubic resize to 129),
+  instead of on every load.
+- **Weight normalization**: the current PyTorch parametrization replaces the deprecated
+  `torch.nn.utils.weight_norm`; the two compute the same weights.
+- **FID**: as in the article, the reconstructions and the counterfactuals ($r = 0$, towards the
+  class the classifier does not predict) of 2048 images are compared with 2048 other images of
+  the same partition (`user.evaluation.fid_samples`). The distance is the one of `torchmetrics`,
+  which uses the Inception weights of the original FID.
+- **Not ported**: the other conditioning variants of the original implementation (`C`, `X`,
+  `Prior`, `CPrior`) and the anomaly detection.
+
+## Results
+
+| | this version | article |
+|---|---|---|
+| classifier accuracy | 97.7 % | |
+| NLL | −102 575 | |
+| $D_{KL}$ | 725.9 | |
+| MSE | $9.81 \times 10^{-4}$ | |
+| FID, reconstructions | 53.0 | 48.1 |
+| FID, counterfactuals ($r = 0$) | 63.8 | 66.0 |
+
+Successful counterfactuals, i.e. counterfactuals the classifier assigns to the target class,
+for each relaxation $r$:
+
+| $r$ | 0 | 0.2 | 0.4 | 0.6 | 0.8 | 1 |
+|---|---|---|---|---|---|---|
+| this version | 99.3 % | 98.8 % | 96.9 % | 89.1 % | 60.7 % | 14.4 % |
+| article | 100 % | 99.8 % | 99.4 % | 96.1 % | 71.4 % | 13.9 % |
+
+The model trained for the article has a sharper trade-off between sample quality and
+counterfactual success: its counterfactuals stay successful up to $r = 0.8$ and then fail
+abruptly, while the success of this version decreases more gradually.
+This version reconstructs slightly less sharply (FID 53.0 against 48.1), but its
+counterfactuals look more realistic (FID 63.8 against 66.0), and overall it offers a better
+trade-off between image quality and counterfactual success from a visual point of view.
+
 ## Citation
 
 ```bibtex
 @inproceedings{9506692,
-  author       = {{Vercheval, Nicolas and Pizurica, Aleksandra}},
-  booktitle    = {{2021 IEEE International Conference on Image Processing (ICIP)}},
-  title        = {{Hierarchical Variational Autoencoders for Visual Counterfactuals}},
-  year         = {{2021}},
-  pages        = {{3498-3502}},
-  doi          = {{10.1109/ICIP42928.2021.9506692}}
+  author       = {Vercheval, Nicolas and Pizurica, Aleksandra},
+  booktitle    = {2021 IEEE International Conference on Image Processing (ICIP)},
+  title        = {Hierarchical Variational Autoencoders for Visual Counterfactuals},
+  year         = {2021},
+  pages        = {3498-3502},
+  doi          = {10.1109/ICIP42928.2021.9506692}
 }
 ```

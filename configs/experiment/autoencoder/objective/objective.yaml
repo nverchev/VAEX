@@ -1,0 +1,4 @@
+c_kld: 100
+freebits: 1.0
+prior_scale: 5.0
+nll_momentum: 0.9
