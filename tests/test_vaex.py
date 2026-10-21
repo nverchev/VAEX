@@ -9,7 +9,7 @@ import torch
 from src.config import Experiment, get_experiment_config
 from src.data.structures import Inputs, Outputs, Targets
 from src.module.autoencoder import VAEX
-from src.train.objectives import GaussianNLL, get_kld_loss
+from src.lib.objectives import GaussianNLL, get_kld_loss
 
 
 @pytest.fixture(scope='module')

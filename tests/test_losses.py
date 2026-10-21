@@ -3,7 +3,7 @@
 import torch
 
 from src.data.structures import Targets
-from src.train.objectives import get_classifier_loss
+from src.lib.objectives import get_classifier_loss
 
 
 def test_the_classifier_loss_reports_the_accuracy() -> None:

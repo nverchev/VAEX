@@ -12,7 +12,7 @@ from torchvision.utils import make_grid
 from drytorch.core import log_events
 from drytorch.trackers.tensorboard import TensorBoard
 
-from src.train.events import ConfidenceEvent, ImageEvent, ImageGridEvent
+from src.lib.events import ConfidenceEvent, ImageEvent, ImageGridEvent
 
 __all__ = ['ImageTensorBoard']
 

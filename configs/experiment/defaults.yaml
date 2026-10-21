@@ -3,6 +3,7 @@ defaults:
   - autoencoder: autoencoder
   - user: user
   - data: data
+  - evaluation: evaluation
   - _self_
 
 

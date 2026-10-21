@@ -12,7 +12,7 @@ from src.data.split import DataSplit
 from src.data.structures import Inputs, Outputs, Targets
 
 if TYPE_CHECKING:
-    from src.train.models import ClassifierModel, VAEModel
+    from src.lib.models import ClassifierModel, VAEModel
 
 
 class ClassifierMixin:

@@ -17,8 +17,8 @@ from src.config import Experiment, ExperimentConfig, hydra_main
 from src.data.dataset import get_split
 from src.data.split import Partitions
 from src.trackers import get_trackers
-from src.train.events import ConfidenceEvent
-from src.train.models import get_classifier_model, load_trained_state
+from src.lib.events import ConfidenceEvent
+from src.lib.models import get_classifier_model, load_trained_state
 
 
 @torch.inference_mode()

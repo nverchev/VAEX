@@ -1,8 +1,8 @@
 """Publication of the figures of the samples and of their counterfactuals."""
 
 from src.config import Experiment
-from src.train.counterfactuals import CounterfactualSweep
-from src.train.events import ImageGridEvent
+from src.utils.counterfactuals import CounterfactualSweep
+from src.lib.events import ImageGridEvent
 
 __all__ = [
     'publish_counterfactual_sweep',

@@ -10,8 +10,8 @@ from pytest_mock import MockerFixture
 from scipy import linalg
 from torch import nn
 
-from src.train import fid as fid_module
-from src.train.fid import FrechetInceptionDistance
+from src.utils import fid as fid_module
+from src.utils.fid import FrechetInceptionDistance
 
 CPU = torch.device('cpu')
 

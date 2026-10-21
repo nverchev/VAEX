@@ -15,6 +15,7 @@ Root config hierarchy::
     │   │   └── architecture: VAEArchitectureConfig
     │   └── objective: ObjectiveConfig
     ├── data: DataConfig
+    ├── evaluation: EvaluationConfig
     └── user: UserSettings
         ├── trackers: TrackerList
         ├── path: PathSpecs          ← populated from .env
@@ -290,17 +291,32 @@ class PhaseConfig:
     """Base specification for an experiment phase.
 
     Attributes:
-        name: Phase identifier.
         train: Training loop configuration.
     """
 
-    name: str
     train: TrainingConfig
 
 
 @dataclass(frozen=True)
+class ClassifierModelConfig:
+    """Classifier model.
+
+    Attributes:
+        name: Classifier architecture.
+    """
+
+    name: str
+
+
+@dataclass(frozen=True)
 class ClassificationConfig(PhaseConfig):
-    """Specification for the classifier, whose architecture is fixed."""
+    """Specification for the classifier.
+
+    Attributes:
+        model: Classifier model.
+    """
+
+    model: ClassifierModelConfig
 
 
 @dataclass(frozen=True)
@@ -343,19 +359,28 @@ class TrackerList:
 
 
 @dataclass(frozen=True)
+class EvaluationConfig:
+    """Settings of the evaluation of the counterfactuals, part of the experiment.
+
+    Attributes:
+        n_delta: Number of steps of the posterior relaxation from one to zero.
+    """
+
+    n_delta: StrictlyPositiveInt
+
+
+@dataclass(frozen=True)
 class PlottingSettings:
     """Options for plotting and sample visualization.
 
     Attributes:
         sample_indices: Indices of samples in the dataset to plot.
         use_train: Whether to draw samples from the training set instead of the test set.
-        n_delta: Number of steps of the posterior relaxation from one to zero.
         show: Whether to also display the figures: the image grids and the learning curves.
     """
 
     sample_indices: list[int]
     use_train: bool
-    n_delta: StrictlyPositiveInt
     show: bool
 
 
@@ -474,6 +499,7 @@ class ExperimentConfig:
         autoencoder: Autoencoder phase configuration.
         user: User-specific options and runtime preferences.
         data: Data pre-processing and dataset configuration.
+        evaluation: Settings of the evaluation of the counterfactuals.
         final: If True, uses validation data for training and test data for evaluation.
         variation: Variation name for the experiment (defaults to git branch if None).
         tags: List of tags describing active configuration overrides.
@@ -483,6 +509,7 @@ class ExperimentConfig:
     autoencoder: AutoencodingConfig
     user: UserSettings
     data: DataConfig
+    evaluation: EvaluationConfig
     final: bool
     variation: str | None = None
     tags: list[str] = dataclasses.field(default_factory=list)

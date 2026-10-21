@@ -16,8 +16,8 @@ from src.config import Experiment, ExperimentConfig, hydra_main
 from src.trackers import get_trackers
 from src.data.dataset import get_split
 from src.data.split import Partitions
-from src.train.models import get_autoencoder_model, get_classifier_model, load_trained_state
-from src.train.counterfactuals import get_counterfactual_sweep
+from src.lib.models import get_autoencoder_model, get_classifier_model, load_trained_state
+from src.utils.counterfactuals import get_counterfactual_sweep
 from src.utils.visualization import publish_counterfactual_sweep
 
 
@@ -40,7 +40,7 @@ def generate_counterfactuals() -> None:
             split, n_samples=cfg.user.generate.batch_size, preserve_order=False, device=classifier.device
         )
 
-    n_delta = cfg.user.plot.n_delta
+    n_delta = cfg.evaluation.n_delta
     relaxations = [(n_delta - step) / n_delta for step in range(n_delta)]
     logging.info('Generating counterfactuals for %d samples using %s...', len(sample_indices), vae.name)
     for index, image, label in zip(sample_indices, samples.image, targets.label.tolist(), strict=True):

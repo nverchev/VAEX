@@ -2,7 +2,7 @@
 
 from unittest.mock import MagicMock
 
-from src.train.hooks import register_checkpointing, register_early_stopping
+from src.lib.hooks import register_checkpointing, register_early_stopping
 
 
 def test_checkpointing_saves_at_the_given_frequency() -> None:

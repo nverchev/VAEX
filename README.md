@@ -80,9 +80,10 @@ uv sync --all-extras --dev  # everything, with the development tools
 
 ### Training
 
-- **Train the CelebA attribute classifier:**
+- **Train the CelebA attribute classifier and test its accuracy:**
   ```bash
   uv run train_classifier.py
+  uv run evaluate_classifier.py
   ```
 
 - **Train the Hierarchical VAEX model:**
@@ -164,6 +165,7 @@ as in the [results](#results):
 ```bash
 uv run train_classifier.py         final=true
 uv run train_vae.py                final=true
+uv run evaluate_classifier.py      final=true
 uv run evaluate_counterfactuals.py final=true
 uv run generate_counterfactuals.py final=true
 ```
@@ -187,8 +189,8 @@ VAEX/
 │   ├── data/                     # CelebA dataset loading, structures
 │   ├── module/                   # Architectures (CelebaClassifier, VAEX) and VAE layers
 │   ├── trackers/                 # Trackers of the images the scripts publish, and of the learning curves
-│   ├── train/                    # Decoupled loss functions, metrics, learning schemas
-│   └── utils/                    # Utilities
+│   ├── lib/                      # DRYTorch components: losses, metrics, learning schemas, models
+│   └── utils/                    # Counterfactual sweeps, FID, figures, distributed training
 ├── tests/                        # Unit tests
 ├── train_classifier.py           # Classifier training entrypoint
 ├── train_vae.py                  # VAE / VAEX training entrypoint

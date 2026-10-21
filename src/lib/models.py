@@ -120,7 +120,7 @@ def get_autoencoder_model(*, mixed_precision: torch.dtype | None = None) -> VAEM
         The VAE, wrapped for training, evaluation and checkpointing.
     """
     cfg = Experiment.get_config()
-    name = cfg.autoencoder.name
+    name = cfg.autoencoder.model.name
     return VAEModel(get_autoencoder(), name=name, device=cfg.user.device, mixed_precision=mixed_precision)
 
 
@@ -131,7 +131,7 @@ def get_classifier_model() -> ClassifierModel:
         The classifier, wrapped for training, evaluation and checkpointing.
     """
     cfg = Experiment.get_config()
-    return ClassifierModel(get_classifier(), name=cfg.classification.name, device=cfg.user.device)
+    return ClassifierModel(get_classifier(), name=cfg.classification.model.name, device=cfg.user.device)
 
 
 def load_trained_state(model: Model[Any, Any], /, *, epoch: int = -1) -> None:

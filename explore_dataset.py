@@ -9,7 +9,7 @@ from drytorch.lib import loading
 from src.config import Experiment, ExperimentConfig, hydra_main
 from src.data import Partitions, get_split
 from src.trackers import get_trackers
-from src.train.events import ImageEvent
+from src.lib.events import ImageEvent
 
 
 @torch.inference_mode()

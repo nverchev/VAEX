@@ -17,8 +17,8 @@ from src.config import Experiment, ExperimentConfig, hydra_main
 from src.data.dataset import get_split
 from src.data.split import DataSplit, Partitions, Subset
 from src.trackers import get_trackers
-from src.train.models import ClassifierModel, get_autoencoder_model, get_classifier_model, load_trained_state
-from src.train.counterfactuals import get_counterfactual_sweep
+from src.lib.models import ClassifierModel, get_autoencoder_model, get_classifier_model, load_trained_state
+from src.utils.counterfactuals import get_counterfactual_sweep
 from src.utils.visualization import publish_counterfactual_sweep
 
 
@@ -37,7 +37,7 @@ def generate_misclassified_counterfactuals() -> None:
         misclassified, n_samples=cfg.user.generate.batch_size, preserve_order=False, device=classifier.device
     )
     sample_indices = [misclassified.indices[index] for index in subset_indices]
-    n_delta = cfg.user.plot.n_delta
+    n_delta = cfg.evaluation.n_delta
     relaxations = [(n_delta - step) / n_delta for step in range(n_delta)]
     logging.info('Generating counterfactuals for %d samples using %s...', len(sample_indices), vae.name)
     for index, image, label in zip(sample_indices, samples.image, targets.label.tolist(), strict=True):

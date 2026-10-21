@@ -23,9 +23,9 @@ from src.data.dataset import get_split
 from src.data.derived_datasets import CounterfactualDataset, EvaluatedDataset, ReconstructedEvaluatedDataset
 from src.data.split import DataSplit, Partitions, Subset
 from src.data.structures import Inputs, Targets
-from src.train.fid import FrechetInceptionDistance
-from src.train.objectives import get_classifier_loss, get_counterfactual_success, get_vae_loss
-from src.train.models import ClassifierModel, VAEModel, get_autoencoder_model, get_classifier_model, load_trained_state
+from src.utils.fid import FrechetInceptionDistance
+from src.lib.objectives import get_classifier_loss, get_counterfactual_success, get_vae_loss
+from src.lib.models import ClassifierModel, VAEModel, get_autoencoder_model, get_classifier_model, load_trained_state
 
 
 def evaluate_success(
@@ -146,11 +146,9 @@ def evaluate_counterfactuals() -> None:
     )()
     labels = torch.cat([targets.label for _, targets in loader]).cpu()
     classes = range(vae_model.module.n_classes)
-
-    # every image aims at the classes not predicted for it; a misclassified one also at its label
     groups = {target: _get_indices(predictions != target) for target in classes}
     misclassified = {target: _get_indices((labels == target) & (predictions != target)) for target in classes}
-    n_delta = cfg.user.plot.n_delta
+    n_delta = cfg.evaluation.n_delta
     for step in range(n_delta + 1):
         relaxation = step / n_delta
         success = evaluate_success(

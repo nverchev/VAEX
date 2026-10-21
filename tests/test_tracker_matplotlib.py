@@ -9,7 +9,7 @@ from matplotlib import pyplot
 
 from src.config import Experiment, get_experiment_config
 from src.trackers.matplotlib import ImageTracker
-from src.train.events import ImageEvent, ImageGridEvent
+from src.lib.events import ImageEvent, ImageGridEvent
 
 
 def _publish(

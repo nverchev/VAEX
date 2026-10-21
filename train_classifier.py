@@ -1,19 +1,19 @@
 """Train the classifier whose probabilities condition the VAE."""
 
-from drytorch import Test, Trainer
+from drytorch import Trainer
 
 from src.config import Experiment, ExperimentConfig, hydra_main
 from src.trackers import get_trackers, save_learning_curves
 from src.config.environment import DEBUG_MODE
-from src.train import get_learning_schema, get_loaders
-from src.train.hooks import register_checkpointing, register_early_stopping
-from src.train.objectives import get_accuracy, get_classifier_loss
-from src.train.models import get_classifier_model
+from src.lib import get_learning_schema, get_loaders
+from src.lib.hooks import register_checkpointing, register_early_stopping
+from src.lib.objectives import get_classifier_loss
+from src.lib.models import get_classifier_model
 from src.utils.parallel import DistributedWorker
 
 
 def train_classification() -> None:
-    """Train the classifier and test it."""
+    """Train the classifier and save it."""
     cfg = Experiment.get_config()
     user_cfg = cfg.user
     class_cfg = cfg.classification
@@ -26,10 +26,9 @@ def train_classification() -> None:
         learning_schema=get_learning_schema(class_cfg),
         loader=train_loader,
         loss=get_classifier_loss(),
-        name=f'Trainer_{class_cfg.name}',
     )
     if not cfg.final:
-        builder.add_validation(eval_loader, val_name=f'Validation_{class_cfg.name}')
+        builder.add_validation(eval_loader)
 
     if not cfg.final and class_cfg.train.early_stopping.active:
         cfg_early = class_cfg.train.early_stopping
@@ -43,9 +42,6 @@ def train_classification() -> None:
 
     trainer.train_until(class_cfg.train.n_epochs)
     trainer.save_checkpoint()
-    if cfg.final:
-        Test(model, name=f'Test_{class_cfg.name}', loader=eval_loader, metric=get_accuracy())()
-
     return
 
 
@@ -63,9 +59,7 @@ def setup_and_train(cfg: ExperimentConfig) -> None:
 
     with exp.create_run(resume=resume, run_id=cfg.user.run_id, record=not DEBUG_MODE):
         train_classification()
-        name = cfg.classification.name
-        source_names = (f'Trainer_{name}', f'Validation_{name}')
-        save_learning_curves(trackers, name, show=cfg.user.plot.show, source_names=source_names)
+        save_learning_curves(trackers, cfg.classification.model.name, show=cfg.user.plot.show)
 
     return
 

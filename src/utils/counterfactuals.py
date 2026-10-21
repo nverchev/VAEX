@@ -7,7 +7,7 @@ from collections.abc import Sequence
 import torch
 
 from src.data.structures import Inputs
-from src.train.models import ClassifierModel, VAEModel
+from src.lib.models import ClassifierModel, VAEModel
 
 __all__ = [
     'CounterfactualSweep',

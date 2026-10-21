@@ -1,0 +1,1 @@
+n_delta: 5  # steps of the posterior relaxation, from one to zero

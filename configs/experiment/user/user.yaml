@@ -40,5 +40,4 @@ plot:
     - 5
     - 10
   use_train: false
-  n_delta: 5
   show: false

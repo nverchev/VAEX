@@ -10,7 +10,7 @@ from src.data.derived_datasets import EvaluatedDataset
 from src.data.structures import Inputs, Targets
 
 if TYPE_CHECKING:
-    from src.train.models import ClassifierModel
+    from src.lib.models import ClassifierModel
 
 
 def get_loaders(

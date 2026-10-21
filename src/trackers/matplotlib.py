@@ -15,7 +15,7 @@ from matplotlib.figure import Figure
 from drytorch.core import log_events
 from drytorch.trackers.base_classes import Dumper
 
-from src.train.events import ConfidenceEvent, ImageEvent, ImageGridEvent
+from src.lib.events import ConfidenceEvent, ImageEvent, ImageGridEvent
 
 __all__ = ['ImageTracker']
 

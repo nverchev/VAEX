@@ -6,8 +6,8 @@ import torch
 
 from src.config import Experiment, ExperimentConfig, hydra_main
 from src.trackers import get_trackers
-from src.train.events import ImageEvent
-from src.train.models import get_autoencoder_model, load_trained_state
+from src.lib.events import ImageEvent
+from src.lib.models import get_autoencoder_model, load_trained_state
 
 
 @torch.inference_mode()

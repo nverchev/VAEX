@@ -6,20 +6,20 @@ Usage::
     uv run train_vae.py autoencoder.model.architecture.inference_block=mobile   # VAEXcat
 """
 
-from drytorch import Test, Trainer
+from drytorch import Trainer
 
 from src.config import Experiment, ExperimentConfig, hydra_main
 from src.trackers import get_trackers, save_learning_curves
 from src.config.environment import DEBUG_MODE
-from src.train import get_learning_schema, get_loaders
-from src.train.hooks import register_checkpointing, register_early_stopping
-from src.train.objectives import get_vae_loss
-from src.train.models import get_autoencoder_model, get_classifier_model, load_trained_state
+from src.lib import get_learning_schema, get_loaders
+from src.lib.hooks import register_checkpointing, register_early_stopping
+from src.lib.objectives import get_vae_loss
+from src.lib.models import get_autoencoder_model, get_classifier_model, load_trained_state
 from src.utils.parallel import DistributedWorker
 
 
 def train_vae() -> None:
-    """Train the autoencoder and test it."""
+    """Train the autoencoder and save it."""
     cfg = Experiment.get_config()
     user_cfg = cfg.user
     vae_cfg = cfg.autoencoder
@@ -37,10 +37,9 @@ def train_vae() -> None:
         learning_schema=get_learning_schema(vae_cfg),
         loader=train_loader,
         loss=loss,
-        name=f'Trainer_{vae_cfg.name}',
     )
     if not cfg.final:
-        builder.add_validation(eval_loader, val_name=f'Validation_{vae_cfg.name}')
+        builder.add_validation(eval_loader)
 
     if not cfg.final and vae_cfg.train.early_stopping.active:
         cfg_early = vae_cfg.train.early_stopping
@@ -53,9 +52,6 @@ def train_vae() -> None:
 
     trainer.train_until(vae_cfg.train.n_epochs)
     trainer.save_checkpoint()
-    if cfg.final:
-        Test(model, name=f'Test_{vae_cfg.name}', loader=eval_loader, metric=loss)()
-
     return
 
 
@@ -73,9 +69,7 @@ def setup_and_train(cfg: ExperimentConfig) -> None:
     # resume the run holding the classifier: the last run of the experiment, or the one user.run_id names
     with exp.create_run(resume=True, run_id=cfg.user.run_id, record=not DEBUG_MODE):
         train_vae()
-        name = cfg.autoencoder.name
-        source_names = (f'Trainer_{name}', f'Validation_{name}')
-        save_learning_curves(trackers, name, show=cfg.user.plot.show, source_names=source_names)
+        save_learning_curves(trackers, cfg.autoencoder.model.name, show=cfg.user.plot.show)
 
     return
 

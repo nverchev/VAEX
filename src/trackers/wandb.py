@@ -9,7 +9,7 @@ import wandb
 from drytorch.core import log_events
 from drytorch.trackers.wandb import Wandb
 
-from src.train.events import ConfidenceEvent, ImageEvent, ImageGridEvent
+from src.lib.events import ConfidenceEvent, ImageEvent, ImageGridEvent
 
 __all__ = ['ImageWandb']
 

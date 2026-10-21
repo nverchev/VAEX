@@ -3,5 +3,3 @@ defaults:
   - model: model
   - objective: objective
   - _self_
-
-name: vae

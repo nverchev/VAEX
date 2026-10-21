@@ -1,5 +1,4 @@
 defaults:
   - train: train
+  - model: celeba_classifier
   - _self_
-
-name: classification

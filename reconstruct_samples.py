@@ -8,9 +8,9 @@ from drytorch.lib import loading
 
 from src.config import Experiment, ExperimentConfig, hydra_main
 from src.trackers import get_trackers
-from src.train.events import ImageEvent
+from src.lib.events import ImageEvent
 from src.data import Inputs, Partitions, get_split
-from src.train.models import get_autoencoder_model, get_classifier_model, load_trained_state
+from src.lib.models import get_autoencoder_model, get_classifier_model, load_trained_state
 
 
 @torch.inference_mode()
