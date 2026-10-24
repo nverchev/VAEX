@@ -9,7 +9,7 @@ from src.config import Experiment, get_experiment_config
 from src.data import DataSplit
 from src.data.derived_datasets import EvaluatedDataset
 from src.data.structures import Inputs, Targets
-from src.module.classifier import get_classifier
+from src.module.classifiers import get_classifier
 from src.lib.models import ClassifierModel
 
 CPU = torch.device('cpu')

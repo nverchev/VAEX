@@ -1,11 +1,8 @@
-# VAEX
+# VAEX for hierarchical counterfactual explanations
 
 Implementation of [**Hierarchical Variational Autoencoders for Visual Counterfactuals**](https://ieeexplore.ieee.org/document/9506692), ICIP 2021.
 
-This project provides a modular, type-safe implementation of VAEX using the [DRYTorch](https://github.com/nverchev/drytorch) engine for ML experimentation.
-
-This version recreates the original code in a modern style and trains the model again with the
-same settings. The [results](#results) compare the new model with the article.
+This version recreates the original code in a modern style using [DRYTorch](https://github.com/nverchev/drytorch). The [results](#results) compare the new model with the article.
 
 ---
 
@@ -13,20 +10,22 @@ same settings. The [results](#results) compare the new model with the article.
 
 Visual counterfactual explanations answer the question: *"How would this image change if its attribute classification were different?"*
 
-This repository implements the **VAEX** model framework:
+### What is VAEX?
 
-- **Hierarchical Bottom-Up / Top-Down VAE** — a multi-scale VAE featuring resolution-aware residual layers, adaptive instance normalization (ADAIN), and free-bits Gaussian KL divergence.
-- **Conditional Attribute Manipulation (`VAEX`)** — explicit conditioning on input attribute maps ($fc_0$) and top-latent attribute maps ($fc_1$), in `src/module/autoencoder.py`.
-- **Decoupled Loss Objectives** — Gaussian Negative Log-Likelihood with a running estimate of the per-pixel variance, free-bits KLD, and prior conditioning.
-- **Visual Counterfactual Generation** — automated generation and rendering of counterfactual image grids across target classes (`Female` and `Male`) and relaxation steps.
-- **Posterior relaxation** — counterfactuals scale the posterior shifts of the lower latents by $r$, squared at each stage, from $r = 1$ (reconstruction) to $r = 0$ (only the top latent).
+**VAEX** (**V**ariational **A**utoencoder **EX**planations) is a framework for generating visual counterfactual explanations for pre-trained black-box classifiers. Rather than modifying images using gradient-based adversarial perturbations (which produce unnatural high-frequency artifacts) or unconditional generative models (which struggle to preserve subject identity), VAEX integrates the classifier's predicted probabilities directly into the generative process of a Variational Autoencoder.
 
-The settings are those of the article: batches of 32, Adam with learning rate $10^{-3}$ decayed
-by $0.95^{\text{epoch}}$ every 10 epochs for 50 epochs, KL divergence weighted by 100 with free
-bits of 1 nat per latent coordinate (`freebits: 1.0`), prior
-mean of the conditioned channel $5\,\xi$, and probabilities centered twice with
-$f(x) = \frac{1}{2}(\sqrt{x} - \sqrt{1 - x} + 1)$. The classifier trains for 10 epochs at
-$10^{-3}$ and 5 at $10^{-4}$.
+By conditioning the autoencoder on the classifier's predictions, VAEX learns the image distribution relative to the decision boundaries. Setting this condition to a counterfactual target class produces semantically plausible image edits that flip the classifier's decision while preserving the subject's identity.
+
+### Application: Hierarchical VAE on CelebA (`Female` / `Male`)
+
+The framework is implemented as a deep **Hierarchical VAE (HVAE)** with multi-scale residual stages connected through bidirectional inference and generative paths. Applied to facial attribute classification on **CelebA**, it benchmarks on the binary **`Male`** attribute (`Female` vs. `Male`).
+
+### Key Contributions
+
+- **Posterior Relaxation**: Resolves the tension between identity preservation and counterfactual transformation. High-level semantics are adjusted at the top latent, while bottom-up posterior shifts of lower latents are progressively attenuated across descending stages, allowing a smooth transition from reconstruction to prior sampling.
+- **Free-Bits KL Divergence**: Reserves a minimum information capacity per latent coordinate to prevent inactive stages and posterior collapse across the hierarchy.
+- **Prior Conditioning**: Aligns the prior mean of the top latent directly with the classifier's target condition.
+- **Decoupled Gaussian NLL**: Uses a running estimate of per-pixel variance to separate spatial reconstruction noise from latent regularization.
 
 ---
 

@@ -89,7 +89,7 @@ def get_trackers(cfg: ExperimentConfig, debug_mode: bool = DEBUG_MODE) -> list[t
         from src.trackers.matplotlib import ImageTracker
 
         optional_tracker_list.append(ImageTracker(show=cfg.user.plot.show))
-        optional_tracker_list.append(MatPlotter())
+        optional_tracker_list.append(MatPlotter(show=cfg.user.plot.show))
 
     if cfg_trackers.plotly:
         try:
@@ -99,7 +99,7 @@ def get_trackers(cfg: ExperimentConfig, debug_mode: bool = DEBUG_MODE) -> list[t
             warnings.warn(f'Plotly not installed, skipping. {e}', stacklevel=2)
 
         else:
-            optional_tracker_list.append(PlotlyPlotter())
+            optional_tracker_list.append(PlotlyPlotter(show=cfg.user.plot.show))
 
     return optional_tracker_list
 

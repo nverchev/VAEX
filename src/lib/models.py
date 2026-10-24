@@ -9,8 +9,8 @@ from drytorch.lib.models import Model
 
 from src.config.experiment import Experiment
 from src.data.structures import Inputs, Outputs
-from src.module.autoencoder import BaseVAEX, get_autoencoder
-from src.module.classifier import BaseClassifier, get_classifier
+from src.module.autoencoders import BaseVAEX, get_autoencoder
+from src.module.classifiers import BaseClassifier, get_classifier
 
 __all__ = [
     'ClassifierModel',

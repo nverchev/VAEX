@@ -66,9 +66,9 @@ def evaluate_success(
         )
         loader = DataLoader(dataset=counterfactuals, batch_size=batch_size, pin_memory=False)
         test_name = f'{name}_r{relaxation:.2f}_to_{target}'
-        test = Test(classifier_model, name=test_name, loader=loader, metric=get_counterfactual_success())
-        test()
-        metrics.append(cast(Metric[Tensor, Targets], test.objective))
+        success = get_counterfactual_success()
+        Test(classifier_model, name=test_name, loader=loader, metric=success)()
+        metrics.append(success)
 
     overall = metrics[0].copy()
     for metric in metrics[1:]:

@@ -3,7 +3,7 @@
 from drytorch import Trainer
 
 from src.config import Experiment, ExperimentConfig, hydra_main
-from src.trackers import get_trackers, save_learning_curves
+from src.trackers import get_trackers
 from src.config.environment import DEBUG_MODE
 from src.lib import get_learning_schema, get_loaders
 from src.lib.hooks import register_checkpointing, register_early_stopping
@@ -59,7 +59,6 @@ def setup_and_train(cfg: ExperimentConfig) -> None:
 
     with exp.create_run(resume=resume, run_id=cfg.user.run_id, record=not DEBUG_MODE):
         train_classification()
-        save_learning_curves(trackers, cfg.classification.model.name, show=cfg.user.plot.show)
 
     return
 

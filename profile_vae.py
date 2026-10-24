@@ -9,7 +9,7 @@ from drytorch.lib.loading import take_from_dataset
 from src.config import Experiment, ExperimentConfig, hydra_main
 from src.data.dataset import get_splits
 from src.data.structures import Outputs
-from src.module.autoencoder import get_autoencoder
+from src.module.autoencoders import get_autoencoder
 from src.lib.objectives import get_vae_loss
 from src.utils.profiling import log_parameter_counts, profile_backward, profile_forward
 
