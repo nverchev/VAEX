@@ -60,6 +60,35 @@ DATA_DIR=/path/to/custom/datasets uv run train_vae.py
 
 ---
 
+## Project structure
+
+```
+VAEX/
+├── configs/                      # Hydra YAML configuration hierarchy
+│   └── experiment/               # Phases (classification, autoencoder), data and user settings
+├── src/
+│   ├── config/                   # Pydantic specs, options, and DRYTorch experiment wiring
+│   ├── data/                     # CelebA dataset loading, structures
+│   ├── module/                   # Architectures (CelebaClassifier, VAEX) and VAE layers
+│   ├── trackers/                 # Trackers of the images the scripts publish, and of the learning curves
+│   ├── lib/                      # DRYTorch components: losses, metrics, learning schemas, models
+│   └── utils/                    # Counterfactual sweeps, FID, figures, distributed training
+├── tests/                        # Unit tests
+├── train_classifier.py           # Classifier training entrypoint
+├── train_vae.py                  # VAE / VAEX training entrypoint
+├── reconstruct_samples.py        # Sample reconstruction entrypoint
+├── generate_counterfactuals.py   # Visual counterfactual grid generator
+├── generate_misclassified_counterfactuals.py  # The same grid, for samples the classifier gets wrong
+├── evaluate_counterfactuals.py   # Reconstruction metrics, counterfactual success and FID
+├── generate_random_samples.py    # Random samples from the priors
+├── explore_dataset.py            # Samples of the preprocessed dataset
+├── plot_confidence.py            # Distribution of the probability of the predicted class
+├── profile_vae.py                # Profiling of the VAE
+└── pyproject.toml
+```
+
+---
+
 ## Installation
 
 The project requires **Python 3.13** and uses [uv](https://github.com/astral-sh/uv) for dependency management.
@@ -167,42 +196,6 @@ uv run train_vae.py                final=true
 uv run evaluate_classifier.py      final=true
 uv run evaluate_counterfactuals.py final=true
 uv run generate_counterfactuals.py final=true
-```
-
-### Testing
-
-```bash
-uv run pytest
-```
-
----
-
-## Project structure
-
-```
-VAEX/
-├── configs/                      # Hydra YAML configuration hierarchy
-│   └── experiment/               # Phases (classification, autoencoder), data and user settings
-├── src/
-│   ├── config/                   # Pydantic specs, options, and DRYTorch experiment wiring
-│   ├── data/                     # CelebA dataset loading, structures
-│   ├── module/                   # Architectures (CelebaClassifier, VAEX) and VAE layers
-│   ├── trackers/                 # Trackers of the images the scripts publish, and of the learning curves
-│   ├── lib/                      # DRYTorch components: losses, metrics, learning schemas, models
-│   └── utils/                    # Counterfactual sweeps, FID, figures, distributed training
-├── tests/                        # Unit tests
-├── train_classifier.py           # Classifier training entrypoint
-├── train_vae.py                  # VAE / VAEX training entrypoint
-├── clone_experiment.py           # Copy an experiment to reuse its classifier
-├── reconstruct_samples.py        # Sample reconstruction entrypoint
-├── generate_counterfactuals.py   # Visual counterfactual grid generator
-├── generate_misclassified_counterfactuals.py  # The same grid, for samples the classifier gets wrong
-├── evaluate_counterfactuals.py   # Reconstruction metrics, counterfactual success and FID
-├── generate_random_samples.py    # Random samples from the priors
-├── explore_dataset.py            # Samples of the preprocessed dataset
-├── plot_confidence.py            # Distribution of the probability of the predicted class
-├── profile_vae.py                # Profiling of the VAE
-└── pyproject.toml
 ```
 
 ---

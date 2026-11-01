@@ -1,7 +1,11 @@
 """Setup of the trackers of the experiment."""
 
+from __future__ import annotations
+
 import os
 import warnings
+
+from typing import TYPE_CHECKING
 
 from hydra.core import utils as hydra_utils
 
@@ -12,10 +16,44 @@ from drytorch.trackers import logging
 from src.config.environment import DEBUG_MODE
 from src.config.specs import ExperimentConfig
 
+if TYPE_CHECKING:
+    from drytorch.trackers.sqlalchemy import SQLConnection
+
 __all__ = [
+    'get_metric_database',
     'get_trackers',
     'set_tuning_logging',
 ]
+
+
+def get_metric_database(cfg: ExperimentConfig) -> SQLConnection | None:
+    """Connect to the metric database of the configuration.
+
+    Args:
+        cfg: Root configuration object.
+
+    Returns:
+        The connection, or ``None`` if the tracker is off or SQLAlchemy is not installed.
+
+    Side Effects:
+        Creates the database in ``version_dir`` if it does not exist.
+    """
+    if not cfg.user.trackers.sqlalchemy:
+        return None
+
+    try:
+        import sqlalchemy
+
+        from drytorch.trackers.sqlalchemy import SQLConnection
+
+    except ImportError as err:
+        warnings.warn(f'SQLAlchemy not installed, skipping. {err}', stacklevel=2)
+        return None
+
+    engine_path = cfg.user.path.version_dir / 'metrics.db'
+    cfg.user.path.version_dir.mkdir(parents=True, exist_ok=True)
+    engine = sqlalchemy.create_engine(f'sqlite:///{engine_path}')
+    return SQLConnection(engine=engine)
 
 
 def get_trackers(cfg: ExperimentConfig, debug_mode: bool = DEBUG_MODE) -> list[tracking.Tracker]:
@@ -68,20 +106,9 @@ def get_trackers(cfg: ExperimentConfig, debug_mode: bool = DEBUG_MODE) -> list[t
 
         optional_tracker_list.append(ImageTensorBoard())
 
-    if cfg_trackers.sqlalchemy:
-        try:
-            import sqlalchemy
-
-            from drytorch.trackers.sqlalchemy import SQLConnection
-
-        except ImportError as e:
-            warnings.warn(f'SQLAlchemy not installed, skipping. {e}', stacklevel=2)
-
-        else:
-            engine_path = cfg.user.path.version_dir / 'metrics.db'
-            cfg.user.path.version_dir.mkdir(exist_ok=True)
-            engine = sqlalchemy.create_engine(f'sqlite:///{engine_path}')
-            optional_tracker_list.append(SQLConnection(engine=engine))
+    sql_connection = get_metric_database(cfg)
+    if sql_connection is not None:
+        optional_tracker_list.append(sql_connection)
 
     if cfg_trackers.matplotlib:
         from drytorch.trackers.matplotlib import MatPlotter

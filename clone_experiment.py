@@ -3,6 +3,7 @@
 The run name includes every override, so a later phase run with new overrides
 looks for the earlier phases under a new name. Cloning the experiment that holds
 them under that name lets the later phase resume it without training them again.
+The metric database follows the folders, so that the plots keep the earlier results.
 
 Usage::
 
@@ -13,9 +14,11 @@ Usage::
 
 import argparse
 
+from drytorch.core import exceptions
 from drytorch.utils import local_ops
 
 from src.config.hydra import get_experiment_config
+from src.trackers import get_metric_database
 
 
 def main() -> None:
@@ -43,6 +46,15 @@ def main() -> None:
     par_dir = cfg.user.path.version_dir
     print(f'Cloning {from_name} as {cfg.name} in {par_dir}...')
     local_ops.clone_experiment_data(par_dir, from_name, cfg.name)
+    database = get_metric_database(cfg)
+    if database is not None:
+        try:
+            database.clone_experiment(from_name, cfg.name)
+        except exceptions.TrackerError as err:
+            print(f'Metric database not updated: {err}')
+
+        database.close()
+
     print('Done.')
     return
 

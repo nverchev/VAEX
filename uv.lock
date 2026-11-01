@@ -212,57 +212,18 @@ wheels = [
 
 [[package]]
 name = "drytorch"
-version = "0.1.0rc11"
-source = { editable = "../drytorch" }
+version = "0.1.0"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "filelock" },
     { name = "numpy" },
     { name = "torch" },
     { name = "typing-extensions" },
 ]
-
-[package.metadata]
-requires-dist = [
-    { name = "basedpyright", marker = "extra == 'type'", specifier = "==1.40.2" },
-    { name = "drytorch", extras = ["recommended"], marker = "extra == 'all-trackers'" },
-    { name = "filelock", specifier = ">=3.21.0" },
-    { name = "hydra-core", marker = "extra == 'all-trackers'", specifier = ">=1.3.0" },
-    { name = "hypothesis", marker = "extra == 'dev'", specifier = ">=0.1.0" },
-    { name = "ipython", marker = "extra == 'all-trackers'", specifier = ">=8.12.0" },
-    { name = "ipywidgets", marker = "extra == 'support'" },
-    { name = "jupytext", marker = "extra == 'dev'", specifier = "==1.19.6" },
-    { name = "matplotlib", marker = "extra == 'all-trackers'", specifier = ">=3.11.0" },
-    { name = "myst-nb", marker = "extra == 'docs'" },
-    { name = "notebook", marker = "extra == 'support'" },
-    { name = "numpy", specifier = ">=1.26.0" },
-    { name = "omegaconf", marker = "extra == 'all-trackers'", specifier = ">=2.3.0" },
-    { name = "optuna", marker = "extra == 'support'", specifier = ">=4.0.0" },
-    { name = "pandas", marker = "extra == 'support'", specifier = "==2.3.0" },
-    { name = "pandas-stubs", marker = "extra == 'type'" },
-    { name = "pillow", marker = "extra == 'support'", specifier = ">=10.0.1" },
-    { name = "plotly", marker = "extra == 'all-trackers'", specifier = ">=4.10.0" },
-    { name = "plotly-stubs", marker = "extra == 'type'" },
-    { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=4.3.0" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
-    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=2.12.1" },
-    { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.4.0" },
-    { name = "pyyaml", marker = "extra == 'recommended'", specifier = ">=6.0" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = "==0.17.1" },
-    { name = "sphinx", marker = "extra == 'docs'" },
-    { name = "sphinx-rtd-theme", marker = "extra == 'docs'" },
-    { name = "sphinxcontrib-mermaid", marker = "extra == 'docs'", specifier = ">=2" },
-    { name = "sqlalchemy", marker = "extra == 'all-trackers'", specifier = ">=2.0.12" },
-    { name = "tensorboard", marker = "extra == 'all-trackers'", specifier = ">=2.17.0" },
-    { name = "torch", specifier = ">=2.10.0" },
-    { name = "torcheval", marker = "extra == 'support'" },
-    { name = "torchmetrics", marker = "extra == 'support'", specifier = ">=1.0.0" },
-    { name = "tqdm", marker = "extra == 'recommended'", specifier = ">=4.50.0" },
-    { name = "types-pyyaml", marker = "extra == 'type'" },
-    { name = "types-tqdm", marker = "extra == 'type'" },
-    { name = "typing-extensions", specifier = ">=4.4.0" },
-    { name = "wandb", marker = "extra == 'all-trackers'", specifier = ">=0.20.0" },
+sdist = { url = "https://files.pythonhosted.org/packages/45/a4/36066fbef945b64fc00a9adfddc3493faf2ee733ba73f3a2b97954463018/drytorch-0.1.0.tar.gz", hash = "sha256:8cd54d337f5353ae7f9fbff0e2916bf3093137bbec03abbf8f9e46ff68278cff", size = 1056216, upload-time = "2026-10-31T23:59:25.208Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/62/98/1e3754b3e329bbb8921179e328371bb86969ad099c7c933216fcea8ccda8/drytorch-0.1.0-py3-none-any.whl", hash = "sha256:d256483f5df3da2e809def9d1475360627ca275eead665cfb5f1cdf01ee1ae6a", size = 118532, upload-time = "2026-10-31T23:59:23.499Z" },
 ]
-provides-extras = ["recommended", "all-trackers", "support", "dev", "docs", "type"]
 
 [[package]]
 name = "filelock"
@@ -706,8 +667,8 @@ name = "nvidia-nccl-cu13"
 version = "2.29.7"
 source = { registry = "https://download.pytorch.org/whl/cu130" }
 wheels = [
-    { url = "https://pypi.nvidia.com/nvidia-nccl-cu13/nvidia_nccl_cu13-2.29.7-py3-none-manylinux_2_18_aarch64.whl", hash = "sha256:674a12383e3c38a1bcccae7d4f3633b37852230b6047883cb2f4c2d1b36d9bf5" },
-    { url = "https://pypi.nvidia.com/nvidia-nccl-cu13/nvidia_nccl_cu13-2.29.7-py3-none-manylinux_2_18_x86_64.whl", hash = "sha256:edd81538446786ec3b73972543e53bb43bcaf0bfc8ef76cb679fcc390ffe136d" },
+    { url = "https://files.pythonhosted.org/packages/72/0d/daf50d44177ee0cbc7ff0a0c91eb5ff676c82be42f9a970bc7597f440c3a/nvidia_nccl_cu13-2.29.7-py3-none-manylinux_2_18_aarch64.whl", hash = "sha256:674a12383e3c38a1bcccae7d4f3633b37852230b6047883cb2f4c2d1b36d9bf5" },
+    { url = "https://files.pythonhosted.org/packages/67/f4/58e4e91b6919367c7aafb8e36fce9aad1a3047e536bf7e2fd560927d3a4c/nvidia_nccl_cu13-2.29.7-py3-none-manylinux_2_18_x86_64.whl", hash = "sha256:edd81538446786ec3b73972543e53bb43bcaf0bfc8ef76cb679fcc390ffe136d" },
 ]
 
 [[package]]
@@ -1344,7 +1305,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "drytorch", editable = "../drytorch" },
+    { name = "drytorch", specifier = ">=0.1.0" },
     { name = "h5py", specifier = ">=3.16.0" },
     { name = "hydra-core", specifier = ">=1.3.2" },
     { name = "matplotlib", specifier = ">=3.11.1" },

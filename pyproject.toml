@@ -47,7 +47,6 @@ typeCheckingMode = "basic"
 testpaths = ["tests"]
 
 [tool.uv.sources]
-drytorch = { path = "../drytorch", editable = true }
 torchmetrics = { index = "pypi" }
 
 # the PyTorch index of the user configuration comes first and hosts an outdated torchmetrics
