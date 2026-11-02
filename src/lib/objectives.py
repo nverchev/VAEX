@@ -26,47 +26,29 @@ __all__ = [
 
 
 class GaussianNLL:
-    """Gaussian negative log-likelihood with a per-pixel variance estimated during training.
-
-    The variance starts from the squared error of the first batch and, in training, moves towards
-    the squared error of each batch.
+    """Gaussian negative log-likelihood with a fixed standard deviation.
 
     Attributes:
-        momentum: weight of the previous estimate of the variance.
+        sigma: standard deviation of each pixel.
     """
 
-    momentum: float
-    _variance: torch.Tensor | None
+    sigma: float
 
-    def __init__(self, momentum: float) -> None:
+    def __init__(self, sigma: float) -> None:
         """Initialize.
 
         Args:
-            momentum: weight of the previous estimate of the variance.
+            sigma: standard deviation of each pixel.
         """
-        self.momentum = momentum
-        self._variance = None
+        self.sigma = sigma
         return
 
     def __call__(self, outputs: Outputs, targets: Targets) -> dict[str, torch.Tensor]:
-        """Get the negative log-likelihood of the batch and the mean squared error.
-
-        Side Effects:
-            Updates the variance when gradients are enabled, as in training.
-        """
+        """Get the negative log-likelihood of the batch and the mean squared error."""
         # mixed precision returns half-precision outputs, too coarse for the loss
         squared_error = F.mse_loss(outputs.recon.float(), targets.ref, reduction='none')
-        batch_variance = squared_error.mean(0).detach()
-        if self._variance is None:
-            self._variance = batch_variance
-
-        variance = self._variance.to(squared_error.device)
-        nll = 0.5 * (squared_error / variance + variance.log()).mean(0).sum()
-        nll = nll + 0.5 * math.log(2 * math.pi) * variance.numel()
-        if torch.is_grad_enabled():
-            self._variance = self.momentum * variance + (1 - self.momentum) * batch_variance
-
-        return {'NLL': nll, 'MSE': squared_error.mean()}
+        pixel_nll = 0.5 * squared_error.mean(0) / self.sigma**2 + math.log(self.sigma) + 0.5 * math.log(2 * math.pi)
+        return {'NLL': pixel_nll.sum(), 'MSE': squared_error.mean()}
 
 
 class FreeBitsKLD:
@@ -152,8 +134,8 @@ def get_classifier_loss() -> LossWithMetrics[torch.Tensor, Targets]:
 
 def get_nll_loss() -> DictLoss[Outputs, Targets]:
     """Get the negative log-likelihood of the reconstruction, reporting the mean squared error."""
-    momentum = Experiment.get_config().autoencoder.objective.nll_momentum
-    return DictLoss[Outputs, Targets](GaussianNLL(momentum), name='NLL')
+    sigma = Experiment.get_config().autoencoder.objective.sigma
+    return DictLoss[Outputs, Targets](GaussianNLL(sigma), name='NLL')
 
 
 def get_kld_loss() -> DictLoss[Outputs, Targets]:

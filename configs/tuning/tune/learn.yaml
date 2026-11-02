@@ -1,0 +1,21 @@
+study_name: learn
+
+params:
+  autoencoder.train.learn.learning_rate:
+    suggest: suggest_float
+    settings:
+      low: 1e-4
+      high: 3e-3
+      log: true
+
+  autoencoder.train.learn.opt_settings.weight_decay:
+    suggest: suggest_float
+    settings:
+      low: 1e-7
+      high: 1e-3
+      log: true
+
+  autoencoder.train.batch_size:
+    suggest: suggest_categorical
+    settings:
+      choices: [16, 32, 64]

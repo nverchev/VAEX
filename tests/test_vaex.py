@@ -116,7 +116,7 @@ class TestVAEX:
 
 
 class TestGaussianNLL:
-    """Test the negative log-likelihood with a learned per-pixel variance."""
+    """Test the negative log-likelihood with a fixed standard deviation."""
 
     @staticmethod
     def _get_batch(error: float) -> tuple[Outputs, Targets]:
@@ -124,18 +124,32 @@ class TestGaussianNLL:
         outputs = Outputs(recon=image + error, prior_mu=torch.empty(0))
         return outputs, Targets(label=torch.zeros(4), ref=image)
 
-    def test_variance_follows_training_batches_only(self) -> None:
-        """The variance moves towards the error of training batches, not of evaluation ones."""
-        nll = GaussianNLL(momentum=0.9)
-        nll(*self._get_batch(1.0))
+    def test_perfect_reconstruction_costs_the_normalization_only(self) -> None:
+        """Without error, the value is the Gaussian normalization of each pixel."""
+        nll = GaussianNLL(sigma=0.5)
 
-        with torch.inference_mode():
-            evaluation = nll(*self._get_batch(2.0))['NLL']
-        training = nll(*self._get_batch(2.0))['NLL']
-        after = nll(*self._get_batch(2.0))['NLL']
+        value = nll(*self._get_batch(0.0))['NLL']
 
-        assert evaluation == training
-        assert after < training
+        assert value.item() == pytest.approx(12 * (math.log(0.5) + 0.5 * math.log(2 * math.pi)))
+
+    def test_error_is_weighted_by_the_inverse_variance(self) -> None:
+        """Halving sigma multiplies the cost of the squared error by four."""
+        wide, narrow = GaussianNLL(sigma=1.0), GaussianNLL(sigma=0.5)
+
+        wide_cost = wide(*self._get_batch(1.0))['NLL'] - wide(*self._get_batch(0.0))['NLL']
+        narrow_cost = narrow(*self._get_batch(1.0))['NLL'] - narrow(*self._get_batch(0.0))['NLL']
+
+        assert narrow_cost.item() == pytest.approx(4 * wide_cost.item())
+
+    def test_training_does_not_change_the_loss(self) -> None:
+        """The value is the same before and after a training batch."""
+        nll = GaussianNLL(sigma=0.5)
+
+        before = nll(*self._get_batch(1.0))['NLL']
+        nll(*self._get_batch(2.0))
+        after = nll(*self._get_batch(1.0))['NLL']
+
+        assert before == after
 
 
 def test_kld_of_posteriors_equal_to_the_priors(experiment: Experiment) -> None:

@@ -22,6 +22,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+finetune = ["optuna>=4.6.0", "plotly>=7.1.0"]
 track_all = [
     "tensorboard>=2.20.0",
     "wandb>=0.23.1",

@@ -1,0 +1,24 @@
+study_name: architecture
+
+# the lists are strings, since Optuna's choices cannot be lists; Hydra reads them as lists
+params:
+  autoencoder.model.architecture.h_dims:
+    suggest: suggest_categorical
+    settings:
+      choices: ['[16, 32, 64, 128, 256, 512]', '[32, 64, 128, 256, 512, 1024]']
+
+  autoencoder.model.architecture.depths:
+    suggest: suggest_categorical
+    settings:
+      choices: ['[1, 1, 1, 1, 1]', '[2, 2, 2, 2, 2]']
+
+  autoencoder.model.architecture.act_cls:
+    suggest: suggest_categorical
+    settings:
+      choices: [Hardswish, ELU, SiLU]
+
+  autoencoder.model.architecture.bn_momentum:
+    suggest: suggest_float
+    settings:
+      low: 0.05
+      high: 0.3

@@ -104,14 +104,13 @@ class ObjectiveConfig:
             stops decreasing.
         prior_scale: Prior mean of the conditioned channel of the top latent for a probability of
             one.
-        nll_momentum: Weight of the previous estimate when updating the per-pixel variance of the
-            reconstruction error.
+        sigma: Standard deviation of each pixel in the negative log-likelihood.
     """
 
     c_kld: PositiveFloat
     freebits: PositiveFloat
     prior_scale: PositiveFloat
-    nll_momentum: PositiveFloat
+    sigma: PositiveFloat
 
 
 @dataclass(frozen=True)

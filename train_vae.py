@@ -6,26 +6,40 @@ Usage::
     uv run train_vae.py autoencoder.model.architecture.inference_block=mobile   # VAEXcat
 """
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from drytorch import Trainer
 
 from src.config import Experiment, ExperimentConfig, hydra_main
 from src.trackers import get_trackers
 from src.config.environment import DEBUG_MODE
 from src.lib import get_learning_schema, get_loaders
-from src.lib.hooks import register_checkpointing, register_early_stopping
+from src.lib.hooks import register_checkpointing, register_early_stopping, register_pruning
 from src.lib.objectives import get_vae_loss
-from src.lib.models import get_autoencoder_model, get_classifier_model, load_trained_state
+from src.lib.models import ClassifierModel, get_autoencoder_model, get_classifier_model, load_trained_state
 from src.utils.parallel import DistributedWorker
 
+if TYPE_CHECKING:
+    from optuna import Trial
 
-def train_vae() -> None:
-    """Train the autoencoder and save it."""
+
+def train_vae(classifier: ClassifierModel | None = None, /, *, trial: Trial | None = None) -> None:
+    """Train the autoencoder and save it.
+
+    Args:
+        classifier: the trained classifier. Default loads it from the experiment.
+        trial: Optuna trial, which replaces checkpointing with pruning.
+    """
     cfg = Experiment.get_config()
     user_cfg = cfg.user
     vae_cfg = cfg.autoencoder
     model = get_autoencoder_model(mixed_precision=vae_cfg.train.mixed_precision)
-    classifier = get_classifier_model()
-    load_trained_state(classifier)
+    if classifier is None:
+        classifier = get_classifier_model()
+        load_trained_state(classifier)
+
     train_loader, eval_loader = get_loaders(
         batch_size=vae_cfg.train.batch_size_per_device,
         n_workers=user_cfg.n_workers,
@@ -45,13 +59,19 @@ def train_vae() -> None:
         cfg_early = vae_cfg.train.early_stopping
         register_early_stopping(builder, window=cfg_early.window, patience=cfg_early.patience)
 
-    register_checkpointing(builder, checkpoint_every=user_cfg.checkpoint_every)
+    if trial is None:
+        register_checkpointing(builder, checkpoint_every=user_cfg.checkpoint_every)
+    else:
+        register_pruning(builder, trial, window=vae_cfg.train.early_stopping.window)
+
     trainer = builder.build()
     if user_cfg.load:
         trainer.load_checkpoint(user_cfg.load)
 
     trainer.train_until(vae_cfg.train.n_epochs)
-    trainer.save_checkpoint()
+    if trial is None:
+        trainer.save_checkpoint()
+
     return
 
 

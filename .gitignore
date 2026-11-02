@@ -13,3 +13,4 @@ reference/
 .idea/
 .vscode/
 wandb
+uv.lock

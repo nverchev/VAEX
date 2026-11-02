@@ -25,7 +25,7 @@ The framework is implemented as a deep **Hierarchical VAE (HVAE)** with multi-sc
 - **Posterior Relaxation**: Resolves the tension between identity preservation and counterfactual transformation. High-level semantics are adjusted at the top latent, while bottom-up posterior shifts of lower latents are progressively attenuated across descending stages, allowing a smooth transition from reconstruction to prior sampling.
 - **Free-Bits KL Divergence**: Reserves a minimum information capacity per latent coordinate to prevent inactive stages and posterior collapse across the hierarchy.
 - **Prior Conditioning**: Aligns the prior mean of the top latent directly with the classifier's target condition.
-- **Decoupled Gaussian NLL**: Uses a running estimate of per-pixel variance to separate spatial reconstruction noise from latent regularization.
+- **Gaussian NLL**: Scores the reconstruction with a fixed standard deviation (`autoencoder.objective.sigma`), which sets the balance with the KL divergence together with `c_kld`.
 
 ---
 
@@ -72,7 +72,7 @@ VAEX/
 │   ├── module/                   # Architectures (CelebaClassifier, VAEX) and VAE layers
 │   ├── trackers/                 # Trackers of the images the scripts publish, and of the learning curves
 │   ├── lib/                      # DRYTorch components: losses, metrics, learning schemas, models
-│   └── utils/                    # Counterfactual sweeps, FID, figures, distributed training
+│   └── utils/                    # Counterfactual sweeps, FID, figures, tuning, distributed training
 ├── tests/                        # Unit tests
 ├── train_classifier.py           # Classifier training entrypoint
 ├── train_vae.py                  # VAE / VAEX training entrypoint
@@ -84,6 +84,8 @@ VAEX/
 ├── explore_dataset.py            # Samples of the preprocessed dataset
 ├── plot_confidence.py            # Distribution of the probability of the predicted class
 ├── profile_vae.py                # Profiling of the VAE
+├── tune_vae.py                   # Tuning of the VAE
+├── plot_tuning_results.py        # Plots of a study
 └── pyproject.toml
 ```
 
@@ -99,7 +101,18 @@ uv sync
 
 # Optional extras
 uv sync --extra track_all   # TensorBoard, W&B, SQLAlchemy
+uv sync --extra finetune    # Optuna hyperparameter tuning
 uv sync --all-extras --dev  # everything, with the development tools
+```
+
+`uv sync` installs the default PyTorch build. To match your machine, check your CUDA version with `nvcc --version`, then add the matching index to `~/.config/uv/uv.toml` before syncing. Replace `cu130` with your version, for example `cu126` for CUDA 12.6, or with `cpu` if you have no GPU:
+
+```toml
+index-strategy = "unsafe-best-match"
+
+[[index]]
+name = "pytorch"
+url = "https://download.pytorch.org/whl/cu130"
 ```
 
 ---
@@ -184,6 +197,18 @@ test/sample_5/counterfactuals.png  # a row per class, a column per relaxation
 After training, the tracker also saves the learning curves under `plots`. Set
 `user.trackers.matplotlib=false` to skip them, or `user.plot.show=true` to also display them.
 Running a script under a debugger skips every tracker, so it writes no files.
+
+### Tuning
+
+`tune_vae.py` searches the settings of the VAE with Optuna. Each trial trains for `n_epochs` (10) and scores the validation loss, so train the classifier first with the same overrides. The search spaces are in `configs/tuning/tune`, chosen with `tune=`:
+
+```bash
+uv run tune_vae.py                         # learning rate, weight decay, batch size
+uv run tune_vae.py tune=architecture       # hidden dimensions, depths, activation, batch normalization
+uv run plot_tuning_results.py tune=learn   # plots of a study
+```
+
+Studies are stored in `optimization_db/` and continue when run again. `sigma` and `c_kld` are not tuned, because they change the scale of the loss that compares the trials.
 
 ### Final pipeline
 
