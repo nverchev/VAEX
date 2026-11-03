@@ -152,14 +152,12 @@ class BaseVAEX(BaseAutoencoder, abc.ABC):
     Attributes:
         n_classes: Number of target classes.
         inference_block: Variant of the inference block.
-        centering_steps: Number of centering steps for classifier probabilities.
-        prior_scale: Prior mean scale of top latent conditioning channel.
+        temperature: Divisor of the log-probabilities of the classifier before the softmax.
     """
 
     n_classes: Final[int]
     inference_block: Final[InferenceBlock]
-    centering_steps: Final[int]
-    prior_scale: Final[float]
+    temperature: Final[float]
 
     def __init__(self) -> None:
         """Initialize."""
@@ -169,8 +167,7 @@ class BaseVAEX(BaseAutoencoder, abc.ABC):
         arch = cfg_model.architecture
         self.n_classes = len(cfg.data.dataset.classes)
         self.inference_block = arch.inference_block
-        self.centering_steps = cfg_model.centering_steps
-        self.prior_scale = cfg.autoencoder.objective.prior_scale
+        self.temperature = cfg_model.temperature
         return
 
     @abc.abstractmethod
@@ -198,13 +195,14 @@ class VAEX(BaseVAEX):
     """Hierarchical VAE conditioned on the probability that a classifier assigns to a sample.
 
     The condition enters as an extra channel of the image and as an extra channel of the top
-    latent, whose first channel has the condition, scaled, as prior mean. Counterfactuals set
-    condition and channel to a target, and relax the posterior of the lower latents.
+    latent, whose first channels have a prior mean learned from the condition. Counterfactuals set
+    condition and channels to a target, and relax the posterior of the lower latents.
 
     Attributes:
         top_channel_dim: Size of a channel of the top latent, flattened.
         condition_to_image: Map from the condition to an extra image channel.
         condition_to_latent: Map from the condition to an extra channel of the top latent.
+        condition_to_prior: Map from the condition to the prior mean of the conditioned channels.
         initial_convolution: Map from the image and its condition to the first features.
         encoding: Residual blocks of the encoder.
         final_inference: Posterior of the top latent.
@@ -217,6 +215,7 @@ class VAEX(BaseVAEX):
     top_channel_dim: Final[int]
     condition_to_image: Final[nn.Sequential]
     condition_to_latent: Final[nn.Sequential]
+    condition_to_prior: Final[nn.Linear]
     initial_convolution: Final[nn.Conv2d]
     encoding: Final[nn.ModuleList]
     final_inference: Final[ToLatentBlock]
@@ -234,13 +233,13 @@ class VAEX(BaseVAEX):
         top_res = resolutions[-1]
         top_z_dim = self.z_dims[-1]
         self.top_channel_dim = ((top_res + 1) // 2) ** 2
-        condition_dim = self.n_classes - 1
         self.condition_to_image = nn.Sequential(
-            nn.Linear(condition_dim, self.x_dim**2),
+            nn.Linear(self.n_classes, self.x_dim**2),
             nn.ELU(),
             nn.Unflatten(1, (1, self.x_dim, self.x_dim)),
         )
-        self.condition_to_latent = nn.Sequential(nn.Linear(condition_dim, self.top_channel_dim), nn.ELU())
+        self.condition_to_latent = nn.Sequential(nn.Linear(self.n_classes, self.top_channel_dim), nn.ELU())
+        self.condition_to_prior = nn.Linear(self.n_classes, self.conditioned_dim)
         self.initial_convolution = nn.Conv2d(self.n_channels + 1, self.h_dims[0], 1, bias=False)
         self.encoding = self._get_encoding(norm)
         self.final_inference = to_latent_cls(self.h_dims[-1], top_z_dim, top_res, act_cls=self.act_cls, norm=norm)
@@ -258,6 +257,11 @@ class VAEX(BaseVAEX):
         """The device of the parameters."""
         return self.init_decoder.device
 
+    @property
+    def conditioned_dim(self) -> int:
+        """The size of the conditioned channels of the top latent, one for each class but the last."""
+        return (self.n_classes - 1) * self.top_channel_dim
+
     @override
     def forward(self, inputs: Inputs, /) -> Outputs:
         """Reconstruct the images under the condition of the classifier."""
@@ -265,19 +269,17 @@ class VAEX(BaseVAEX):
 
     @override
     def extra_repr(self) -> str:
-        return f'centering_steps={self.centering_steps}, eval_std_divisor={self.eval_std_divisor}'
+        return f'temperature={self.temperature}, eval_std_divisor={self.eval_std_divisor}'
 
     @override
     def condition_from(self, inputs: Inputs) -> torch.Tensor:
-        """Get the centered probabilities of all classes but the last.
-
-        Each centering applies ``(sqrt(p) - sqrt(1 - p) + 1) / 2``, which keeps 0, 1/2 and 1.
+        """Get the softmax of the log-probabilities of the classifier, divided by the temperature.
 
         Args:
             inputs: inputs holding the log-probabilities of the classifier.
 
         Returns:
-            The condition, of shape ``(B, n_classes - 1)``.
+            The condition, of shape ``(B, n_classes)``.
 
         Raises:
             ValueError: if the inputs have no log-probabilities.
@@ -285,7 +287,7 @@ class VAEX(BaseVAEX):
         if inputs.log_probs.numel() == 0:
             raise ValueError('The inputs need the log-probabilities of the classifier.')
 
-        return self._center(inputs.log_probs.exp())
+        return torch.softmax(inputs.log_probs / self.temperature, dim=1)
 
     @override
     def generate_counterfactual(self, image: torch.Tensor, target: int, relaxation: float) -> Outputs:
@@ -305,7 +307,7 @@ class VAEX(BaseVAEX):
         condition = self.get_target_condition(target, len(image))
         encoding = self.encode(image, condition)
         z = encoding.z.clone()
-        z[:, : condition.size(1) * self.top_channel_dim] = self._get_top_shift(condition)
+        z[:, : self.conditioned_dim] = self.condition_to_prior(condition)
         outputs = self.decode(z, condition, encoding.hidden, relaxation=relaxation)
         return outputs
 
@@ -389,7 +391,7 @@ class VAEX(BaseVAEX):
         top_dim = self.z_dims[-1] * self.top_channel_dim
         standard = torch.zeros(len(condition), top_dim, device=self.device)
         z = self.sample(standard, standard)  # the prior of the top latent is standard
-        z[:, : condition.size(1) * self.top_channel_dim] = self._get_top_shift(condition)
+        z[:, : self.conditioned_dim] = self.condition_to_prior(condition)
         return self.decode(z, condition, None).recon
 
     @override
@@ -403,11 +405,10 @@ class VAEX(BaseVAEX):
             batch_size: number of samples.
 
         Returns:
-            The condition, of shape ``(B, n_classes - 1)``, on the device of the parameters.
+            The condition, of shape ``(B, n_classes)``, on the device of the parameters.
         """
         concentration = torch.ones(self.n_classes, device=self.device)
-        probabilities = torch.distributions.Dirichlet(concentration).sample((batch_size,))
-        return self._center(probabilities)
+        return torch.distributions.Dirichlet(concentration).sample((batch_size,))
 
     @override
     def get_target_condition(self, target: int, batch_size: int) -> torch.Tensor:
@@ -418,12 +419,10 @@ class VAEX(BaseVAEX):
             batch_size: number of samples.
 
         Returns:
-            The condition, one-hot on all classes but the last, on the device of the parameters.
+            The condition, one-hot, on the device of the parameters.
         """
-        condition = torch.zeros(batch_size, self.n_classes - 1, device=self.device)
-        if target < self.n_classes - 1:
-            condition[:, target] = 1
-
+        condition = torch.zeros(batch_size, self.n_classes, device=self.device)
+        condition[:, target] = 1
         return condition
 
     @override
@@ -461,17 +460,9 @@ class VAEX(BaseVAEX):
 
         return mu + torch.randn_like(std) * std
 
-    def _center(self, probabilities: torch.Tensor) -> torch.Tensor:
-        # the condition holds all classes but the last, which the others imply
-        condition = probabilities[:, :-1]
-        for _ in range(self.centering_steps):
-            condition = (condition.sqrt() - (1 - condition).sqrt() + 1) / 2
-
-        return condition
-
     def _get_prior_mu(self, condition: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
         prior_mu = torch.zeros_like(z)
-        prior_mu[:, : condition.size(1) * self.top_channel_dim] = self._get_top_shift(condition)
+        prior_mu[:, : self.conditioned_dim] = self.condition_to_prior(condition)
         return prior_mu
 
     def _get_encoding(self, norm: NormFactory) -> nn.ModuleList:
@@ -559,9 +550,6 @@ class VAEX(BaseVAEX):
             inference=to_latent_cls(h_out, z_dim, res, act_cls=self.act_cls, norm=norm),
             from_latent=FromLatentConv(h_out, z_dim, res, act_cls=self.act_cls, norm=norm),
         )
-
-    def _get_top_shift(self, condition: torch.Tensor) -> torch.Tensor:
-        return self.prior_scale * condition.repeat_interleave(self.top_channel_dim, dim=1)
 
 
 def get_autoencoder() -> BaseVAEX:

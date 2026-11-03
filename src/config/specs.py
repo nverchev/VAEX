@@ -63,6 +63,7 @@ OptimizerClass = Annotated[type[torch.optim.Optimizer], BeforeValidator(get_opti
 PositiveInt = Annotated[int, Field(ge=0)]
 StrictlyPositiveInt = Annotated[int, Field(gt=0)]
 PositiveFloat = Annotated[float, Field(ge=0)]
+StrictlyPositiveFloat = Annotated[float, Field(gt=0)]
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -102,14 +103,11 @@ class ObjectiveConfig:
         c_kld: Weight of the KL divergence against the negative log-likelihood.
         freebits: Free bits of each latent coordinate, below which the smoothed KL divergence
             stops decreasing.
-        prior_scale: Prior mean of the conditioned channel of the top latent for a probability of
-            one.
         sigma: Standard deviation of each pixel in the negative log-likelihood.
     """
 
     c_kld: PositiveFloat
     freebits: PositiveFloat
-    prior_scale: PositiveFloat
     sigma: PositiveFloat
 
 
@@ -121,15 +119,14 @@ class ModelConfig:
         name: Model architecture variant to instantiate.
         architecture: VAEArchitectureConfig
         z_dims: Per-stage latent dimensions, from the pixels to the top latent.
-        centering_steps: How many times the classifier probability is centered before it
-            conditions the VAE.
+        temperature: Divisor of the log-probabilities of the classifier before the softmax.
         eval_std_divisor: Division of the standard deviation of the latents in evaluation mode.
     """
 
     name: Models
     architecture: VAEArchitectureConfig
     z_dims: tuple[StrictlyPositiveInt, ...]
-    centering_steps: PositiveInt
+    temperature: StrictlyPositiveFloat
     eval_std_divisor: PositiveFloat
 
 

@@ -28,10 +28,6 @@ def module(experiment: Experiment) -> VAEX:
     return VAEX().eval()
 
 
-def _center(probability: float) -> float:
-    return (math.sqrt(probability) - math.sqrt(1 - probability) + 1) / 2
-
-
 def _get_inputs(probability_first: float, batch_size: int = 2) -> Inputs:
     probabilities = torch.tensor([[probability_first, 1 - probability_first]]).repeat(batch_size, 1)
     return Inputs(image=torch.rand(batch_size, 3, 129, 129), log_probs=probabilities.log())
@@ -40,11 +36,14 @@ def _get_inputs(probability_first: float, batch_size: int = 2) -> Inputs:
 class TestVAEX:
     """Test the reconstructions, the counterfactuals and the generation."""
 
-    def test_condition_is_the_centered_first_probability(self, module: VAEX) -> None:
-        """The probability of the first class is centered twice."""
-        condition = module.condition_from(_get_inputs(0.1))
+    def test_condition_is_the_tempered_softmax(self, module: VAEX) -> None:
+        """The log-probabilities of the classifier are divided by the temperature before the softmax."""
+        inputs = _get_inputs(0.1)
+        expected = torch.softmax(inputs.log_probs / module.temperature, dim=1)
 
-        torch.testing.assert_close(condition, torch.full((2, 1), _center(_center(0.1))))
+        condition = module.condition_from(inputs)
+
+        torch.testing.assert_close(condition, expected)
 
     @torch.inference_mode()
     def test_reconstruction_and_posteriors(self, module: VAEX) -> None:
@@ -56,16 +55,15 @@ class TestVAEX:
         assert len(outputs.prior_log_var) == len(module.z_dims) - 1
 
     @torch.inference_mode()
-    def test_prior_mean_shifts_the_first_channel(self, module: VAEX) -> None:
-        """The first channel of the top latent has the scaled condition as prior mean."""
+    def test_prior_mean_shifts_the_conditioned_channels(self, module: VAEX) -> None:
+        """The conditioned channels of the top latent have the learned prior mean, the others zero."""
         inputs = _get_inputs(0.3)
         condition = module.condition_from(inputs)
 
         prior_mu = module(inputs).prior_mu
 
-        first_channel = prior_mu[:, : module.top_channel_dim]
-        torch.testing.assert_close(first_channel, (module.prior_scale * condition).expand_as(first_channel))
-        assert prior_mu[:, module.top_channel_dim :].abs().max() == 0
+        torch.testing.assert_close(prior_mu[:, : module.conditioned_dim], module.condition_to_prior(condition))
+        assert prior_mu[:, module.conditioned_dim :].abs().max() == 0
 
     @torch.inference_mode()
     def test_counterfactuals_and_generation(self, module: VAEX) -> None:
@@ -101,18 +99,12 @@ class TestVAEX:
         assert torch.equal(top_mean, torch.zeros_like(top_mean))
         assert torch.equal(top_log_var, torch.zeros_like(top_log_var))
 
-    def test_random_condition_is_centered_like_the_classifier(self, module: VAEX) -> None:
-        """Random probabilities are turned into a condition as the classifier's are."""
-        concentration = torch.ones(module.n_classes)
-        torch.manual_seed(0)
-        probabilities = torch.distributions.Dirichlet(concentration).sample((64,))
-        expected = module.condition_from(Inputs(image=torch.empty(0), log_probs=probabilities.log()))
-        torch.manual_seed(0)
-
+    def test_random_condition_is_a_probability_vector(self, module: VAEX) -> None:
+        """Random conditions are probabilities over all the classes."""
         condition = module.get_random_condition(64)
 
-        torch.testing.assert_close(condition, expected)
-        assert bool(((condition > 0) & (condition < 1)).any())
+        assert condition.shape == (64, module.n_classes)
+        torch.testing.assert_close(condition.sum(dim=1), torch.ones(64))
 
 
 class TestGaussianNLL:

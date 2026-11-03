@@ -24,7 +24,7 @@ The framework is implemented as a deep **Hierarchical VAE (HVAE)** with multi-sc
 
 - **Posterior Relaxation**: Resolves the tension between identity preservation and counterfactual transformation. High-level semantics are adjusted at the top latent, while bottom-up posterior shifts of lower latents are progressively attenuated across descending stages, allowing a smooth transition from reconstruction to prior sampling.
 - **Free-Bits KL Divergence**: Reserves a minimum information capacity per latent coordinate to prevent inactive stages and posterior collapse across the hierarchy.
-- **Prior Conditioning**: Aligns the prior mean of the top latent directly with the classifier's target condition.
+- **Prior Conditioning**: The condition is the softmax of the classifier's log-probabilities divided by a temperature (`autoencoder.model.temperature`). A linear layer maps it to the prior mean of the conditioned channels of the top latent.
 - **Gaussian NLL**: Scores the reconstruction with a fixed standard deviation (`autoencoder.objective.sigma`), which sets the balance with the KL divergence together with `c_kld`.
 
 ---

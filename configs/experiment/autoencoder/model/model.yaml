@@ -4,5 +4,5 @@ defaults:
 
 name: vaex
 z_dims: [1, 2, 4, 8, 16, 32]
-centering_steps: 2
+temperature: 5.0
 eval_std_divisor: 3.0
