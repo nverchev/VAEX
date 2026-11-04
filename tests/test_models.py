@@ -10,7 +10,8 @@ from src.data import DataSplit
 from src.data.derived_datasets import EvaluatedDataset
 from src.data.structures import Inputs, Targets
 from src.module.classifiers import get_classifier
-from src.lib.models import ClassifierModel
+from src.lib.models import ClassifierModel, VAEEMAModel, VAEModel
+from src.module.autoencoders import VAEX
 
 CPU = torch.device('cpu')
 
@@ -58,3 +59,40 @@ def test_evaluated_dataset_runs_the_model(classifier: ClassifierModel) -> None:
 
     assert len(items) == 2
     assert all(inputs.log_probs.dtype == torch.float32 for inputs, _ in items)
+
+
+@pytest.mark.parametrize('average', [True, False])
+def test_vae_reconstructs_with_the_weights_it_evaluates(experiment: Experiment, mocker, average: bool) -> None:
+    """The model with an average reconstructs and generates with it; the plain model with the trained weights."""
+    model: VAEModel = VAEEMAModel(VAEX(), decay=0.5, name='vaex', device=CPU)
+    if not average:
+        model.unregister()
+        model = VAEModel(VAEX(), name='vaex', device=CPU)
+
+    expected = model.averaged_module if isinstance(model, VAEEMAModel) else model.module
+    reconstruct_spy = mocker.spy(expected, 'reconstruct')
+    generate_spy = mocker.spy(expected, 'generate')
+    inputs = Inputs(image=torch.rand(2, 3, 129, 129), log_probs=torch.full((2, 2), 0.5).log())
+
+    model.reconstruct(inputs, relaxation=0.0)
+    model.generate(model.module.get_target_condition(0, 2))
+
+    model.unregister()
+    assert reconstruct_spy.call_args.kwargs['relaxation'] == 0.0
+    assert generate_spy.call_count == 1
+
+
+def test_average_follows_the_trained_weights(experiment: Experiment) -> None:
+    """After the first update copies the weights, each batch moves the average by the decay."""
+    model = VAEEMAModel(VAEX(), decay=0.5, name='vaex', device=CPU)
+    model.post_batch_update()
+    trained = next(model.module.parameters())
+    before = next(model.averaged_module.parameters()).clone()
+    with torch.no_grad():
+        trained.add_(1.0)
+
+    model.post_batch_update()
+
+    averaged = next(model.averaged_module.parameters())
+    model.unregister()
+    torch.testing.assert_close(averaged, 0.5 * before + 0.5 * trained)

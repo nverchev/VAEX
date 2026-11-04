@@ -35,7 +35,8 @@ def train_vae(classifier: ClassifierModel | None = None, /, *, trial: Trial | No
     cfg = Experiment.get_config()
     user_cfg = cfg.user
     vae_cfg = cfg.autoencoder
-    model = get_autoencoder_model(mixed_precision=vae_cfg.train.mixed_precision)
+    # the trials of a study compare the trained weights, as the average lags behind in a short training
+    model = get_autoencoder_model(average=trial is None, mixed_precision=vae_cfg.train.mixed_precision)
     if classifier is None:
         classifier = get_classifier_model()
         load_trained_state(classifier)

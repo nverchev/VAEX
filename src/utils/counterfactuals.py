@@ -62,11 +62,10 @@ def get_counterfactual_sweep(
     Returns:
         The images and the probabilities the classifier assigns to them.
     """
-    vae.module.eval()  # the simple cut calls the module directly
     batch = image.unsqueeze(0)
     inputs = Inputs(image=batch, log_probs=classifier.log_probabilities(Inputs(image=batch)))
-    recon = vae.module.reconstruct(inputs).recon
-    cut = vae.module.reconstruct(inputs, relaxation=0.0).recon
+    recon = vae.reconstruct(inputs).recon
+    cut = vae.reconstruct(inputs, relaxation=0.0).recon
     probabilities = classifier.log_probabilities(Inputs(image=torch.cat([batch, recon, cut]))).exp()[:, label]
     counterfactuals: list[torch.Tensor] = []
     counterfactual_probabilities: list[torch.Tensor] = []

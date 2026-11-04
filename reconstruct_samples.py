@@ -10,7 +10,7 @@ from src.config import Experiment, ExperimentConfig, hydra_main
 from src.trackers import get_trackers
 from src.lib.events import ImageEvent
 from src.data import Inputs, Partitions, get_split
-from src.lib.models import get_autoencoder_model, get_classifier_model, load_trained_state
+from src.lib.models import load_autoencoder_model, get_classifier_model, load_trained_state
 
 
 @torch.inference_mode()
@@ -24,8 +24,7 @@ def reconstruct_samples() -> None:
         partition = Partitions.test if cfg.final else Partitions.val
 
     split = get_split(partition)
-    vae_model = get_autoencoder_model()
-    load_trained_state(vae_model, epoch=cfg_user.load or -1)
+    vae_model = load_autoencoder_model()
     classifier = get_classifier_model()
     load_trained_state(classifier)
     device = vae_model.device

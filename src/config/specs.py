@@ -121,6 +121,7 @@ class ModelConfig:
         z_dims: Per-stage latent dimensions, from the pixels to the top latent.
         temperature: Divisor of the log-probabilities of the classifier before the softmax.
         eval_std_divisor: Division of the standard deviation of the latents in evaluation mode.
+        ema_decay: Decay of the exponential moving average of the weights.
     """
 
     name: Models
@@ -128,6 +129,7 @@ class ModelConfig:
     z_dims: tuple[StrictlyPositiveInt, ...]
     temperature: StrictlyPositiveFloat
     eval_std_divisor: PositiveFloat
+    ema_decay: Annotated[float, Field(gt=0, lt=1)]
 
 
 @dataclass(frozen=True)
@@ -360,9 +362,15 @@ class EvaluationConfig:
 
     Attributes:
         relaxations: Weights of the posterior of the lower latents to generate counterfactuals with.
+        fid_samples: Images of the evaluation partition whose reconstructions and counterfactuals
+            the FID measures, against as many other images of the same partition.
+        fid_relaxation: Weight of the posterior of the lower latents in the counterfactuals the FID
+            measures; ``0`` decodes them from the prior only.
     """
 
     relaxations: Annotated[tuple[Annotated[float, Field(ge=0, le=1)], ...], Field(min_length=1)]
+    fid_samples: StrictlyPositiveInt
+    fid_relaxation: Annotated[float, Field(ge=0, le=1)]
 
 
 @dataclass(frozen=True)
@@ -390,21 +398,6 @@ class GenerateOptions:
     """
 
     batch_size: PositiveInt
-
-
-@dataclass(frozen=True)
-class EvaluationOptions:
-    """Options for the evaluation of the reconstructions and the counterfactuals.
-
-    Attributes:
-        fid_samples: Images of the evaluation partition whose reconstructions and counterfactuals
-            the FID measures, against as many other images of the same partition.
-        fid_relaxation: Weight of the posterior of the lower latents in the counterfactuals the FID
-            measures; ``0`` decodes them from the prior only.
-    """
-
-    fid_samples: StrictlyPositiveInt
-    fid_relaxation: Annotated[float, Field(ge=0, le=1)]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -459,7 +452,6 @@ class UserSettings:
         run_id: Run to resume; empty resumes the last run of the experiment.
         plot: Options of the figures.
         generate: Options of the random samples.
-        evaluation: Options of the evaluation.
         hydra: Hydra runtime settings.
         path: Paths of the data and the experiments.
     """
@@ -474,7 +466,6 @@ class UserSettings:
     run_id: str | None
     plot: PlottingSettings
     generate: GenerateOptions
-    evaluation: EvaluationOptions
     hydra: HydraSettings = dataclasses.field(default_factory=HydraSettings)
     path: PathSpecs = dataclasses.field(default_factory=PathSpecs)
 

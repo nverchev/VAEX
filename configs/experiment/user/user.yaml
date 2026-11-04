@@ -16,11 +16,6 @@ run_id: null  # null = the last run
 generate:
   batch_size: 16
 
-# Evaluation
-evaluation:
-  fid_samples: 2048
-  fid_relaxation: 0.6
-
 # Trackers
 trackers:
   hydra: true

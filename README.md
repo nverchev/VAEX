@@ -198,6 +198,10 @@ After training, the tracker also saves the learning curves under `plots`. Set
 `user.trackers.matplotlib=false` to skip them, or `user.plot.show=true` to also display them.
 Running a script under a debugger skips every tracker, so it writes no files.
 
+Training keeps an exponential moving average of the weights of the VAE
+(`autoencoder.model.ema_decay`), which the scripts evaluate. The trials of `tune_vae.py` train without
+the average.
+
 ### Tuning
 
 `tune_vae.py` searches the settings of the VAE with Optuna. Each trial trains for `n_epochs` (10) and scores the validation loss, so train the classifier first with the same overrides. The search spaces are in `configs/tuning/tune`, chosen with `tune=`:
@@ -238,9 +242,9 @@ computes. Technical differences:
   `torch.nn.utils.weight_norm`; the two compute the same weights.
 - **FID**: as in the article, the reconstructions and the counterfactuals (towards the class the
   classifier does not predict) of 2048 images are compared with 2048 other images of the same
-  partition (`user.evaluation.fid_samples`). The counterfactuals use $r = 0.6$
-  (`user.evaluation.fid_relaxation`); the article used $r = 0$, so set
-  `user.evaluation.fid_relaxation=0` to compare with it. The distance is the one of
+  partition (`evaluation.fid_samples`). The counterfactuals use $r = 0.6$
+  (`evaluation.fid_relaxation`); the article used $r = 0$, so set
+  `evaluation.fid_relaxation=0` to compare with it. The distance is the one of
   `torchmetrics`, which uses the Inception weights of the original FID.
 - **Not ported**: the other conditioning variants of the original implementation (`C`, `X`,
   `Prior`, `CPrior`) and the anomaly detection.

@@ -6,3 +6,4 @@ name: vaex
 z_dims: [1, 2, 4, 8, 16, 32]
 temperature: 5.0
 eval_std_divisor: 3.0
+ema_decay: 0.9999

@@ -1,11 +1,11 @@
 """Models of the experiment."""
 
-from typing import Any
+from typing import Any, override
 
 import torch
 
 from drytorch.core.exceptions import ModelNotFoundError
-from drytorch.lib.models import Model
+from drytorch.lib.models import EMAModel, Model
 
 from src.config.experiment import Experiment
 from src.data.structures import Inputs, Outputs
@@ -14,9 +14,11 @@ from src.module.classifiers import BaseClassifier, get_classifier
 
 __all__ = [
     'ClassifierModel',
+    'VAEEMAModel',
     'VAEModel',
     'get_autoencoder_model',
     'get_classifier_model',
+    'load_autoencoder_model',
     'load_trained_state',
 ]
 
@@ -70,6 +72,25 @@ class VAEModel(Model[Inputs, Outputs]):
 
     module: BaseVAEX
 
+    @property
+    def inference_module(self) -> BaseVAEX:
+        """The VAE that reconstructs and generates: the trained one."""
+        return self.module
+
+    @torch.inference_mode()
+    def generate(self, condition: torch.Tensor, /) -> torch.Tensor:
+        """Generate images under a condition, sampling every latent from its prior.
+
+        Args:
+            condition: the condition of each image.
+
+        Returns:
+            The images, in full precision.
+        """
+        module = self.inference_module.eval()
+        with self._autocast():
+            return module.generate(condition).float()
+
     @torch.inference_mode()
     def generate_counterfactual(self, image: torch.Tensor, target: int, relaxation: float) -> Outputs:
         """Generate counterfactuals of the images for a target class, in the precision of the model.
@@ -82,26 +103,28 @@ class VAEModel(Model[Inputs, Outputs]):
         Returns:
             The outputs, with the counterfactuals in full precision.
         """
-        self.module.eval()
+        module = self.inference_module.eval()
         with self._autocast():
-            outputs = self.module.generate_counterfactual(image, target, relaxation)
+            outputs = module.generate_counterfactual(image, target, relaxation)
 
         outputs.recon = outputs.recon.float()
         return outputs
 
     @torch.inference_mode()
-    def reconstruct(self, inputs: Inputs, /) -> Outputs:
+    def reconstruct(self, inputs: Inputs, /, relaxation: float = 1.0) -> Outputs:
         """Reconstruct the images, in the precision of the model.
 
         Args:
             inputs: the images and the log-probabilities of the classifier.
+            relaxation: weight of the posterior of the lower latents; ``1`` reconstructs the
+                images, ``0`` gives their simple cut.
 
         Returns:
             The outputs, with the reconstructions in full precision.
         """
-        self.module.eval()
+        module = self.inference_module.eval()
         with self._autocast():
-            outputs = self.module.reconstruct(inputs)
+            outputs = module.reconstruct(inputs, relaxation=relaxation)
 
         outputs.recon = outputs.recon.float()
         return outputs
@@ -110,18 +133,63 @@ class VAEModel(Model[Inputs, Outputs]):
         return torch.autocast(self.device.type, dtype=self.mixed_precision, enabled=self.mixed_precision is not None)
 
 
-def get_autoencoder_model(*, mixed_precision: torch.dtype | None = None) -> VAEModel:
+class VAEEMAModel(EMAModel[Inputs, Outputs], VAEModel):
+    """Model wrapping the VAE, with an exponential moving average of its weights.
+
+    The average reconstructs and generates, and runs the forward pass in inference mode.
+
+    Attributes:
+        module: the trained VAE.
+        averaged_module: the VAE with the averaged weights.
+    """
+
+    module: BaseVAEX
+    averaged_module: BaseVAEX
+
+    @property
+    @override
+    def inference_module(self) -> BaseVAEX:
+        """The VAE that reconstructs and generates: the one with the averaged weights."""
+        return self.averaged_module
+
+
+def get_autoencoder_model(*, average: bool, mixed_precision: torch.dtype | None = None) -> VAEModel:
     """Get the VAE of the experiment.
 
     Args:
+        average: whether to keep an exponential moving average of the weights.
         mixed_precision: if not None, the autocast precision.
 
     Returns:
         The VAE, wrapped for training, evaluation and checkpointing.
     """
     cfg = Experiment.get_config()
-    name = cfg.autoencoder.model.name
-    return VAEModel(get_autoencoder(), name=name, device=cfg.user.device, mixed_precision=mixed_precision)
+    cfg_model = cfg.autoencoder.model
+    if average:
+        return VAEEMAModel(
+            get_autoencoder(),
+            decay=cfg_model.ema_decay,
+            name=cfg_model.name,
+            device=cfg.user.device,
+            mixed_precision=mixed_precision,
+        )
+
+    return VAEModel(get_autoencoder(), name=cfg_model.name, device=cfg.user.device, mixed_precision=mixed_precision)
+
+
+def load_autoencoder_model() -> VAEModel:
+    """Load the trained VAE with the average of its weights.
+
+    Returns:
+        The trained VAE, at the epoch ``user.load`` sets.
+
+    Raises:
+        RuntimeError: if the experiment holds no trained VAE.
+    """
+    cfg = Experiment.get_config()
+    model = get_autoencoder_model(average=True)
+    load_trained_state(model, epoch=cfg.user.load or -1)
+    return model
 
 
 def get_classifier_model() -> ClassifierModel:

@@ -25,7 +25,7 @@ from src.data.split import DataSplit, Partitions, Subset
 from src.data.structures import Inputs, Targets
 from src.utils.fid import FrechetInceptionDistance
 from src.lib.objectives import get_classifier_loss, get_counterfactual_success, get_vae_loss
-from src.lib.models import ClassifierModel, VAEModel, get_autoencoder_model, get_classifier_model, load_trained_state
+from src.lib.models import ClassifierModel, VAEModel, load_autoencoder_model, get_classifier_model, load_trained_state
 
 
 def evaluate_success(
@@ -86,9 +86,9 @@ def evaluate_fid(
 ) -> None:
     """Log the FID of the reconstructions and of the counterfactuals.
 
-    The first ``user.evaluation.fid_samples`` images are reconstructed and turned towards a
+    The first ``evaluation.fid_samples`` images are reconstructed and turned towards a
     class the classifier does not predict for them, with the posterior weighted by
-    ``user.evaluation.fid_relaxation``; the next as many images are the reference.
+    ``evaluation.fid_relaxation``; the next as many images are the reference.
 
     Args:
         classifier_model: the trained classifier.
@@ -100,7 +100,7 @@ def evaluate_fid(
     Raises:
         ValueError: if the partition has fewer than twice ``fid_samples`` images.
     """
-    n_samples = Experiment.get_config().user.evaluation.fid_samples
+    n_samples = Experiment.get_config().evaluation.fid_samples
     if 2 * n_samples > len(cast(Sized, split)):
         msg = f'The FID needs {2 * n_samples} images, the evaluation partition has {len(cast(Sized, split))}.'
         raise ValueError(msg)
@@ -112,7 +112,7 @@ def evaluate_fid(
     reconstructions = _reconstruct(classifier_model, vae_model, split, range(n_samples), batch_size)
     distance = fid(vae_model, reconstructions, name='FID_reconstructions')
     logging.info('FID of the reconstructions: %.1f', distance)
-    relaxation = Experiment.get_config().user.evaluation.fid_relaxation
+    relaxation = Experiment.get_config().evaluation.fid_relaxation
     images = _generate_counterfactuals(vae_model, split, predictions[:n_samples], relaxation, batch_size)
     distance = fid(vae_model, images, name=f'FID_counterfactuals_r{relaxation:.2f}')
     logging.info('FID of the counterfactuals (r=%.2f): %.1f', relaxation, distance)
@@ -125,8 +125,7 @@ def evaluate_counterfactuals() -> None:
     cfg = Experiment.get_config()
     classifier_model = get_classifier_model()
     load_trained_state(classifier_model)
-    vae_model = get_autoencoder_model()
-    load_trained_state(vae_model, epoch=cfg.user.load or -1)
+    vae_model = load_autoencoder_model()
     batch_size = cfg.autoencoder.train.batch_size
     split = get_split(Partitions.test if cfg.final else Partitions.val)
     loader = DataLoader(dataset=split, batch_size=batch_size, pin_memory=False)
