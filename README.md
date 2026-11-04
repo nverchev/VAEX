@@ -236,10 +236,12 @@ computes. Technical differences:
   instead of on every load.
 - **Weight normalization**: the current PyTorch parametrization replaces the deprecated
   `torch.nn.utils.weight_norm`; the two compute the same weights.
-- **FID**: as in the article, the reconstructions and the counterfactuals ($r = 0$, towards the
-  class the classifier does not predict) of 2048 images are compared with 2048 other images of
-  the same partition (`user.evaluation.fid_samples`). The distance is the one of `torchmetrics`,
-  which uses the Inception weights of the original FID.
+- **FID**: as in the article, the reconstructions and the counterfactuals (towards the class the
+  classifier does not predict) of 2048 images are compared with 2048 other images of the same
+  partition (`user.evaluation.fid_samples`). The counterfactuals use $r = 0.6$
+  (`user.evaluation.fid_relaxation`); the article used $r = 0$, so set
+  `user.evaluation.fid_relaxation=0` to compare with it. The distance is the one of
+  `torchmetrics`, which uses the Inception weights of the original FID.
 - **Not ported**: the other conditioning variants of the original implementation (`C`, `X`,
   `Prior`, `CPrior`) and the anomaly detection.
 

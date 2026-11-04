@@ -1,1 +1,1 @@
-n_delta: 5  # steps of the posterior relaxation, from one to zero
+relaxations: [1.0, 0.9, 0.8, 0.7, 0.6]  # weights of the posterior of the lower latents

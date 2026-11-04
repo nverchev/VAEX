@@ -359,10 +359,10 @@ class EvaluationConfig:
     """Settings of the evaluation of the counterfactuals, part of the experiment.
 
     Attributes:
-        n_delta: Number of steps of the posterior relaxation from one to zero.
+        relaxations: Weights of the posterior of the lower latents to generate counterfactuals with.
     """
 
-    n_delta: StrictlyPositiveInt
+    relaxations: Annotated[tuple[Annotated[float, Field(ge=0, le=1)], ...], Field(min_length=1)]
 
 
 @dataclass(frozen=True)

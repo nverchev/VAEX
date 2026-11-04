@@ -148,9 +148,7 @@ def evaluate_counterfactuals() -> None:
     classes = range(vae_model.module.n_classes)
     groups = {target: _get_indices(predictions != target) for target in classes}
     misclassified = {target: _get_indices((labels == target) & (predictions != target)) for target in classes}
-    n_delta = cfg.evaluation.n_delta
-    for step in range(n_delta + 1):
-        relaxation = step / n_delta
+    for relaxation in cfg.evaluation.relaxations:
         success = evaluate_success(
             classifier_model, split, vae_model, groups, relaxation, batch_size, name='Counterfactual'
         )

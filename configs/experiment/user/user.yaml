@@ -19,7 +19,7 @@ generate:
 # Evaluation
 evaluation:
   fid_samples: 2048
-  fid_relaxation: 0.0
+  fid_relaxation: 0.6
 
 # Trackers
 trackers:

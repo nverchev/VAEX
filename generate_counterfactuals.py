@@ -40,8 +40,7 @@ def generate_counterfactuals() -> None:
             split, n_samples=cfg.user.generate.batch_size, preserve_order=False, device=classifier.device
         )
 
-    n_delta = cfg.evaluation.n_delta
-    relaxations = [(n_delta - step) / n_delta for step in range(n_delta)]
+    relaxations = cfg.evaluation.relaxations
     logging.info('Generating counterfactuals for %d samples using %s...', len(sample_indices), vae.name)
     for index, image, label in zip(sample_indices, samples.image, targets.label.tolist(), strict=True):
         sweep = get_counterfactual_sweep(classifier, vae, image, label=label, relaxations=relaxations)
