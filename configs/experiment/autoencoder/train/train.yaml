@@ -4,6 +4,6 @@ defaults:
   - _self_
 
 n_epochs: 50
-batch_size: 32
+batch_size: 16
 mixed_precision: null  # null = full precision
 _n_subprocesses: ${user.n_subprocesses}
