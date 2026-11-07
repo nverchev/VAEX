@@ -160,6 +160,12 @@ class TestVAEX:
 
         assert weights == (0.5**5, 0.5**4, 0.5**3, 0.5**2, 0.5)
 
+    def test_target_condition_takes_one_class_for_each_sample(self, module: VAEX) -> None:
+        """A tensor of targets gives each sample the one-hot condition of its own class."""
+        condition = module.get_target_condition(torch.tensor([1, 0, 1]), 3)
+
+        torch.testing.assert_close(condition, torch.tensor([[0.0, 1.0], [1.0, 0.0], [0.0, 1.0]]))
+
     def test_random_condition_is_a_probability_vector(self, module: VAEX) -> None:
         """Random conditions are probabilities over all the classes."""
         condition = module.get_random_condition(64)

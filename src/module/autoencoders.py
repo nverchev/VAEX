@@ -7,6 +7,7 @@ from typing import Final, cast, override
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from src.config.experiment import Experiment
 from src.config.options import InferenceBlock, Models
@@ -178,7 +179,7 @@ class BaseVAEX(BaseAutoencoder, abc.ABC):
         return
 
     @abc.abstractmethod
-    def generate_counterfactual(self, inputs: Inputs, target: int, relaxation: float) -> Outputs:
+    def generate_counterfactual(self, inputs: Inputs, target: int | torch.Tensor, relaxation: float) -> Outputs:
         """Generate counterfactual reconstructions."""
 
     @abc.abstractmethod
@@ -194,7 +195,7 @@ class BaseVAEX(BaseAutoencoder, abc.ABC):
         """Get the condition of random probabilities of the classes for each sample."""
 
     @abc.abstractmethod
-    def get_target_condition(self, target: int, batch_size: int) -> torch.Tensor:
+    def get_target_condition(self, target: int | torch.Tensor, batch_size: int) -> torch.Tensor:
         """Get the condition of a class, a probability of one for it."""
 
 
@@ -316,7 +317,7 @@ class VAEX(BaseVAEX):
         return torch.softmax(inputs.log_probs / self.temperature, dim=1)
 
     @override
-    def generate_counterfactual(self, inputs: Inputs, target: int, relaxation: float) -> Outputs:
+    def generate_counterfactual(self, inputs: Inputs, target: int | torch.Tensor, relaxation: float) -> Outputs:
         """Generate counterfactuals of the images for a target class.
 
         The condition mixes the probabilities of the classifier with the target class, weighted by
@@ -326,7 +327,7 @@ class VAEX(BaseVAEX):
 
         Args:
             inputs: the images and the log-probabilities of the classifier.
-            target: the class the counterfactuals aim at.
+            target: the class the counterfactuals aim at, or one class for each image.
             relaxation: weight of the posterior, from 1 (reconstruction) to 0 (prior only).
 
         Returns:
@@ -485,19 +486,18 @@ class VAEX(BaseVAEX):
         return torch.distributions.Dirichlet(concentration).sample((batch_size,))
 
     @override
-    def get_target_condition(self, target: int, batch_size: int) -> torch.Tensor:
+    def get_target_condition(self, target: int | torch.Tensor, batch_size: int) -> torch.Tensor:
         """Get the condition of a class, a probability of one for it.
 
         Args:
-            target: the class.
+            target: the class, or one class for each sample.
             batch_size: number of samples.
 
         Returns:
             The condition, one-hot, on the device of the parameters.
         """
-        condition = torch.zeros(batch_size, self.n_classes, device=self.device)
-        condition[:, target] = 1
-        return condition
+        targets = torch.as_tensor(target, device=self.device).expand(batch_size)
+        return F.one_hot(targets, self.n_classes).float()
 
     @override
     def reconstruct(self, inputs: Inputs, /, relaxation: float = 1.0) -> Outputs:

@@ -65,8 +65,8 @@ class ClassifierModel(Model[Inputs, torch.Tensor]):
         ]
 
 
-type BatchNormPath = tuple[str, int, float]
-"""A path through the VAE: the method, the target class (-1 for none) and the relaxation."""
+type BatchNormPath = tuple[str, float]
+"""A path through the VAE: the method and the relaxation."""
 
 BATCH_NORM_TYPES: Final = (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d)
 
@@ -78,7 +78,8 @@ class VAEModel(Model[Inputs, Outputs]):
     and the generation decode along other paths than training, so the batch normalization
     statistics that training collected do not fit them. With calibration inputs, the model
     re-estimates the statistics of the module it evaluates on each path before it first takes
-    it, and keeps them for each path.
+    it, and keeps them for each path. The counterfactuals of one relaxation share statistics,
+    measured with each image turned to another class than its prediction.
 
     Attributes:
         module: the VAE.
@@ -107,7 +108,7 @@ class VAEModel(Model[Inputs, Outputs]):
     def __call__(self, inputs: Inputs, /) -> Outputs:
         """Run the forward pass, recording the epoch of the model for the annealing and the warm-up."""
         if torch.is_inference_mode_enabled():
-            self._calibrate(('reconstruct', -1, 1.0), self._run_reconstruction)
+            self._calibrate(('reconstruct', 1.0), self._run_reconstruction)
 
         outputs = super().__call__(inputs)
         outputs.epoch = self.epoch
@@ -128,7 +129,7 @@ class VAEModel(Model[Inputs, Outputs]):
         Returns:
             The images, in full precision.
         """
-        self._calibrate(('generate', -1, 0.0), self._run_generation)
+        self._calibrate(('generate', 0.0), self._run_generation)
         module = self.inference_module.eval()
         with self._autocast():
             return module.generate(condition).float()
@@ -145,7 +146,7 @@ class VAEModel(Model[Inputs, Outputs]):
         Returns:
             The outputs, with the counterfactuals in full precision.
         """
-        self._calibrate(('counterfactual', target, relaxation), self._run_counterfactual)
+        self._calibrate(('counterfactual', relaxation), self._run_counterfactual)
         module = self.inference_module.eval()
         with self._autocast():
             outputs = module.generate_counterfactual(inputs, target, relaxation)
@@ -165,7 +166,7 @@ class VAEModel(Model[Inputs, Outputs]):
         Returns:
             The outputs, with the reconstructions in full precision.
         """
-        self._calibrate(('reconstruct', -1, relaxation), self._run_reconstruction)
+        self._calibrate(('reconstruct', relaxation), self._run_reconstruction)
         module = self.inference_module.eval()
         with self._autocast():
             outputs = module.reconstruct(inputs, relaxation=relaxation)
@@ -216,18 +217,15 @@ class VAEModel(Model[Inputs, Outputs]):
 
     @staticmethod
     def _run_reconstruction(module: BaseVAEX, batch: Inputs, path: BatchNormPath) -> None:
-        module.reconstruct(batch, relaxation=path[2])
+        module.reconstruct(batch, relaxation=path[1])
         return
 
     @staticmethod
     def _run_counterfactual(module: BaseVAEX, batch: Inputs, path: BatchNormPath) -> None:
-        _, target, relaxation = path
-        other = batch.log_probs.argmax(dim=1) != target
-        if other.any():
-            module.generate_counterfactual(
-                Inputs(image=batch.image[other], log_probs=batch.log_probs[other]), target, relaxation
-            )
-
+        # each image turns to the next class from its prediction, so that the population mixes the
+        # classes as in training, and the shift towards a class is not normalised away
+        targets = (batch.log_probs.argmax(dim=1) + 1) % module.n_classes
+        module.generate_counterfactual(batch, targets, path[1])
         return
 
     @staticmethod
