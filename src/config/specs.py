@@ -212,6 +212,14 @@ class LearningConfig:
     opt_settings: dict[str, Any]
 
     @model_validator(mode='after')
+    def _check_decoupled_weight_decay(self) -> Self:
+        if self.optimizer is torch.optim.Adam and self.opt_settings.get('weight_decay', 0) > 0:
+            msg = 'Adam adds the weight decay to the gradient: use AdamW for weight decay.'
+            raise ValueError(msg)
+
+        return self
+
+    @model_validator(mode='after')
     def _check_clip_criterion(self) -> Self:
         if self.clip_criterion is None and self.grad_op in (GradOp.HIST_CLIPPER, GradOp.PARAM_HIST_CLIPPER):
             msg = 'Must specify clip_criterion when using HistClipper or ParamHistClipper.'

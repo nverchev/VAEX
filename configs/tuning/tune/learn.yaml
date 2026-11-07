@@ -11,8 +11,8 @@ params:
   autoencoder.train.learn.opt_settings.weight_decay:
     suggest: suggest_float
     settings:
-      low: 1e-7
-      high: 1e-3
+      low: 1e-6  # decoupled weight decay of AdamW
+      high: 1e-1
       log: true
 
   autoencoder.train.batch_size:

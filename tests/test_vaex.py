@@ -167,3 +167,11 @@ def test_freebits_must_match_the_stages() -> None:
     """A configuration with free bits for fewer stages than the latents raises ValueError."""
     with pytest.raises(ValueError, match='freebits'):
         get_experiment_config(overrides=['autoencoder.objective.freebits=[1.0,0.5]'])
+
+
+def test_adam_with_weight_decay_is_rejected() -> None:
+    """Adam with weight decay raises ValueError: the weight decay needs AdamW."""
+    overrides = ['autoencoder.train.learn.optimizer=Adam', 'autoencoder.train.learn.opt_settings.weight_decay=0.01']
+
+    with pytest.raises(ValueError, match='AdamW'):
+        get_experiment_config(overrides=overrides)

@@ -2,7 +2,7 @@ defaults:
   - scheduler: step
   - _self_
 
-optimizer: Adam
+optimizer: AdamW
 learning_rate: 5.e-4
 grad_op: null
 clip_criterion: null
