@@ -127,7 +127,7 @@ def evaluate_counterfactuals() -> None:
     cfg = Experiment.get_config()
     classifier_model = get_classifier_model()
     load_trained_state(classifier_model)
-    vae_model = load_autoencoder_model()
+    vae_model = load_autoencoder_model(classifier_model)
     batch_size = cfg.autoencoder.train.batch_size
     split = get_split(Partitions.test if cfg.final else Partitions.val)
     loader = DataLoader(dataset=split, batch_size=batch_size, pin_memory=False)

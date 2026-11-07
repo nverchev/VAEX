@@ -24,9 +24,9 @@ def reconstruct_samples() -> None:
         partition = Partitions.test if cfg.final else Partitions.val
 
     split = get_split(partition)
-    vae_model = load_autoencoder_model()
     classifier = get_classifier_model()
     load_trained_state(classifier)
+    vae_model = load_autoencoder_model(classifier)
     device = vae_model.device
     if cfg_user.plot.sample_indices:
         sample_indices, (samples, targets) = loading.take_from_dataset(

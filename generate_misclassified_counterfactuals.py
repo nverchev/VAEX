@@ -28,7 +28,7 @@ def generate_misclassified_counterfactuals() -> None:
     cfg = Experiment.get_config()
     classifier = get_classifier_model()
     load_trained_state(classifier)
-    vae = load_autoencoder_model()
+    vae = load_autoencoder_model(classifier)
     partition = Partitions.test if cfg.final else Partitions.val
     split = get_split(partition)
     misclassified = Subset(split, _get_misclassified(classifier, split))
