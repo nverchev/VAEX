@@ -1,3 +1,3 @@
-c_kld: 100
 freebits: [1.0, 0.5, 0.25, 0.12, 0.06, 0.03]  # from the top latent down
-sigma: 0.03
+sigma_2: 0.03  # variance of each pixel
+reversal_strength: 1.0

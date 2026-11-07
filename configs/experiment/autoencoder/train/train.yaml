@@ -7,3 +7,6 @@ n_epochs: 50
 batch_size: 16
 mixed_precision: null  # null = full precision
 _n_subprocesses: ${user.n_subprocesses}
+annealing_period: 90
+annealing_cycles: 2
+adv_warmup_epochs: 3

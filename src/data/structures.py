@@ -31,16 +31,18 @@ class Encoding:
     """Encoder outputs that the decoder reads.
 
     Attributes:
-        z: Sample of the top latent, flattened.
-        mu: Mean of the posterior of the top latent.
-        log_var: Log-variance of the posterior of the top latent.
+        mu: Shift of the posterior mean of the top latent from its prior, flattened.
+        log_var: Shift of the posterior log-variance of the top latent from its prior, flattened.
         hidden: Features of the encoder at each resolution, from the coarsest.
     """
 
-    z: torch.Tensor
     mu: torch.Tensor
     log_var: torch.Tensor
     hidden: tuple[torch.Tensor, ...]
+
+
+def _get_empty() -> torch.Tensor:
+    return torch.empty(0)
 
 
 @dataclasses.dataclass(slots=True)
@@ -49,14 +51,18 @@ class Outputs:
 
     Attributes:
         recon: Reconstructed (or counterfactual) images.
-        prior_mu: Prior mean of the top latent, set by the condition.
-        mu: Mean of the posterior of the top latent, then the posterior shifts of the stages.
-        log_var: Log-variance of the posterior of the top latent, then the shifts of the stages.
-        prior_log_var: Prior log-variances of the stages.
+        mu: Shifts of the posterior means from the priors, from the top latent down.
+        log_var: Shifts of the posterior log-variances from the priors, from the top latent down.
+        prior_log_var: Prior log-variances, from the top latent down.
+        adv_logits: Logits of the adversary on the free channels of the top latent.
+        log_probs: Log-probabilities of the classifier, which the adversary learns to predict.
+        epoch: Epoch of the model when it produced the outputs, 1 in the first training epoch.
     """
 
     recon: torch.Tensor
-    prior_mu: torch.Tensor
     mu: list[torch.Tensor] = dataclasses.field(default_factory=list)
     log_var: list[torch.Tensor] = dataclasses.field(default_factory=list)
     prior_log_var: list[torch.Tensor] = dataclasses.field(default_factory=list)
+    adv_logits: torch.Tensor = dataclasses.field(default_factory=_get_empty)
+    log_probs: torch.Tensor = dataclasses.field(default_factory=_get_empty)
+    epoch: int = 0

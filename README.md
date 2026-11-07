@@ -22,10 +22,13 @@ The framework is implemented as a deep **Hierarchical VAE (HVAE)** with multi-sc
 
 ### Key Contributions
 
-- **Posterior Relaxation**: Resolves the tension between identity preservation and counterfactual transformation. High-level semantics are adjusted at the top latent, while bottom-up posterior shifts of lower latents are progressively attenuated across descending stages, allowing a smooth transition from reconstruction to prior sampling.
-- **Free-Bits KL Divergence**: Reserves a minimum information capacity per latent coordinate to prevent inactive stages and posterior collapse across the hierarchy. Each stage has its own free bits (`autoencoder.objective.freebits`, from the top latent down), and the KL divergence of each stage is logged as `KLD_stage_<i>`.
-- **Prior Conditioning**: The condition is the softmax of the classifier's log-probabilities divided by a temperature (`autoencoder.model.temperature`). A linear layer maps it to the prior mean of the conditioned channels of the top latent.
-- **Gaussian NLL**: Scores the reconstruction with a fixed standard deviation (`autoencoder.objective.sigma`), which sets the balance with the KL divergence together with `c_kld`.
+- **Posterior Relaxation**: Resolves the tension between identity preservation and counterfactual transformation. High-level semantics are adjusted at the top latent, while the posterior shift of the lower latent `level` stages below the top is weighted by `relaxation ** (6 - level)`: the coarse latents follow the condition and the finest keep the texture of the image, allowing a smooth transition from reconstruction to prior sampling.
+- **Free-Bits KL Divergence**: Reserves a minimum information capacity per latent coordinate to prevent inactive stages and posterior collapse across the hierarchy. Each stage has its own free bits (`autoencoder.objective.freebits`, from the top latent down), and the KL divergence of each stage is logged as `KLD_stage_<i>`. `Active_stage_<i>` logs the fraction of the coordinates of each stage whose KL divergence exceeds 0.01 nats; it falls to zero when a stage collapses.
+- **Prior Conditioning**: The condition is the softmax of the classifier's log-probabilities divided by a temperature (`autoencoder.model.temperature`). A linear layer maps it to the prior mean and log-variance of the conditioned channels of the top latent (`autoencoder.model.z_cond_dim`); the other channels, the free ones, have a learned prior that ignores the condition. Every posterior is a shift from its prior.
+- **Information Eraser**: An adversary predicts the probabilities of the classifier from the posterior of the free channels of the top latent. A gradient reversal (`autoencoder.objective.reversal_strength`) makes the free channels hide the class, so that a counterfactual changes the class through the conditioned channels only. The adversarial loss (`Adv`) rises to full weight over `autoencoder.train.adv_warmup_epochs`.
+- **Cyclical KL Annealing**: The weight of the KL divergence rises along a cosine from 0.01 to 1 in each of `autoencoder.train.annealing_cycles` cycles over the first `autoencoder.train.annealing_period` epochs, then stays at 1.
+- **Gaussian NLL**: Scores the reconstruction with a fixed variance (`autoencoder.objective.sigma_2`), which sets the balance with the KL divergence.
+- **Sampling**: In evaluation mode, the standard deviation of each latent is multiplied by its factor in `autoencoder.model.sampling_std`, from the top latent down. Counterfactuals mix the classifier's probabilities with the target class, weighted by `evaluation.strength`.
 
 ---
 
@@ -212,7 +215,7 @@ uv run tune_vae.py tune=architecture       # hidden dimensions, depths, activati
 uv run plot_tuning_results.py tune=learn   # plots of a study
 ```
 
-Studies are stored in `optimization_db/` and continue when run again. `sigma` and `c_kld` are not tuned, because they change the scale of the loss that compares the trials.
+Studies are stored in `optimization_db/` and continue when run again. `sigma_2` is not tuned, because it changes the scale of the loss that compares the trials.
 
 ### Final pipeline
 

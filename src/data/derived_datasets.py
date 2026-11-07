@@ -56,7 +56,7 @@ class CounterfactualMixin(ClassifierMixin, AutoencoderMixin):
         return self.autoencoder.device
 
     def _generate_counterfactual(self, batch_inputs: Inputs) -> Outputs:
-        return self.autoencoder.generate_counterfactual(batch_inputs.image, self.target_class, self.relaxation)
+        return self.autoencoder.generate_counterfactual(batch_inputs, self.target_class, self.relaxation)
 
 
 class ProcessedDataset(DataSplit, abc.ABC):

@@ -113,7 +113,9 @@ def evaluate_fid(
     distance = fid(vae_model, reconstructions, name='FID_reconstructions')
     logging.info('FID of the reconstructions: %.1f', distance)
     relaxation = Experiment.get_config().evaluation.fid_relaxation
-    images = _generate_counterfactuals(vae_model, split, predictions[:n_samples], relaxation, batch_size)
+    images = _generate_counterfactuals(
+        classifier_model, vae_model, split, predictions[:n_samples], relaxation, batch_size
+    )
     distance = fid(vae_model, images, name=f'FID_counterfactuals_r{relaxation:.2f}')
     logging.info('FID of the counterfactuals (r=%.2f): %.1f', relaxation, distance)
     return
@@ -183,6 +185,7 @@ def main(cfg: ExperimentConfig) -> None:
 
 @torch.inference_mode()
 def _generate_counterfactuals(
+    classifier_model: ClassifierModel,
     vae_model: VAEModel,
     split: DataSplit,
     predictions: Tensor,
@@ -195,7 +198,8 @@ def _generate_counterfactuals(
             continue
 
         for inputs in _take_batches(split, indices, batch_size, vae_model.device):
-            yield vae_model.generate_counterfactual(inputs.image, target, relaxation).recon
+            inputs = inputs._replace(log_probs=classifier_model.log_probabilities(inputs))
+            yield vae_model.generate_counterfactual(inputs, target, relaxation).recon
 
     return
 

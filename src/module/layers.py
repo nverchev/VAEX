@@ -2,7 +2,7 @@
 
 import functools
 from collections.abc import Callable
-from typing import Final, Protocol, override
+from typing import Any, Final, Protocol, cast, override
 
 import torch
 import torch.nn as nn
@@ -13,6 +13,8 @@ from src.config.torch import ActClass, NormClass
 __all__ = [
     'ConvBlock',
     'FromLatentConv',
+    'GradientReversal',
+    'InformationEraser',
     'MobileBlock',
     'NormFactory',
     'ResBlock',
@@ -462,3 +464,52 @@ class ToLatentConvMobile(nn.Module):
 
         mu, log_var = self.to_latent(x).chunk(2, 1)
         return mu, log_var
+
+
+class GradientReversal(torch.autograd.Function):
+    """Identity in the forward pass; multiply the gradient by ``-strength`` in the backward pass."""
+
+    @staticmethod
+    @override
+    def forward(ctx: Any, x: torch.Tensor, strength: float) -> torch.Tensor:
+        ctx.strength = strength
+        return x.view_as(x)
+
+    @staticmethod
+    @override
+    def backward(ctx: Any, *grad_outputs: torch.Tensor) -> tuple[torch.Tensor, None]:
+        return -ctx.strength * grad_outputs[0], None
+
+
+class InformationEraser(nn.Module):
+    """Adversary predicting the class from features, which reverses the gradient it sends back.
+
+    The adversary learns to predict the class, while the features learn to hide it.
+
+    Attributes:
+        reversal_strength: factor of the reversed gradient.
+        mlp: the predictor of the logits.
+    """
+
+    reversal_strength: Final[float]
+    mlp: Final[nn.Sequential]
+
+    def __init__(self, in_dim: int, n_classes: int, *, reversal_strength: float, hidden_dim: int = 512) -> None:
+        """Initialize.
+
+        Args:
+            in_dim: size of the features.
+            n_classes: number of classes.
+            reversal_strength: factor of the reversed gradient.
+            hidden_dim: size of the hidden layer.
+        """
+        super().__init__()
+        self.reversal_strength = reversal_strength
+        self.mlp = nn.Sequential(nn.Linear(in_dim, hidden_dim), nn.ReLU(), nn.Linear(hidden_dim, n_classes))
+        return
+
+    @override
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        """Get the logits of the classes, reversing the gradient towards the features."""
+        reversed_features = cast(torch.Tensor, GradientReversal.apply(features, self.reversal_strength))
+        return self.mlp(reversed_features)

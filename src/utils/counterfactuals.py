@@ -70,7 +70,7 @@ def get_counterfactual_sweep(
     counterfactuals: list[torch.Tensor] = []
     counterfactual_probabilities: list[torch.Tensor] = []
     for target in range(vae.module.n_classes):
-        row = torch.cat([vae.generate_counterfactual(batch, target, relaxation).recon for relaxation in relaxations])
+        row = torch.cat([vae.generate_counterfactual(inputs, target, relaxation).recon for relaxation in relaxations])
         counterfactuals.append(row)
         counterfactual_probabilities.append(classifier.log_probabilities(Inputs(image=row)).exp()[:, target])
 

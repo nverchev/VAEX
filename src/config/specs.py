@@ -100,15 +100,17 @@ class ObjectiveConfig:
     """Specification for the loss of the VAE.
 
     Attributes:
-        c_kld: Weight of the KL divergence against the negative log-likelihood.
         freebits: Free bits of each coordinate of each stage, from the top latent down, below
             which the smoothed KL divergence stops decreasing.
-        sigma: Standard deviation of each pixel in the negative log-likelihood.
+        sigma_2: Variance of each pixel in the negative log-likelihood, which sets the balance
+            with the KL divergence.
+        reversal_strength: Factor of the reversed gradient that the adversary sends to the free
+            channels of the top latent.
     """
 
-    c_kld: PositiveFloat
     freebits: tuple[PositiveFloat, ...]
-    sigma: PositiveFloat
+    sigma_2: StrictlyPositiveFloat
+    reversal_strength: PositiveFloat
 
 
 @dataclass(frozen=True)
@@ -119,17 +121,32 @@ class ModelConfig:
         name: Model architecture variant to instantiate.
         architecture: VAEArchitectureConfig
         z_dims: Per-stage latent dimensions, from the pixels to the top latent.
+        z_cond_dim: Channels of the top latent whose prior the condition sets; the others are free.
         temperature: Divisor of the log-probabilities of the classifier before the softmax.
-        eval_std_divisor: Division of the standard deviation of the latents in evaluation mode.
+        sampling_std: Factor of the standard deviation of each latent in evaluation mode, from
+            the top latent down.
         ema_decay: Decay of the exponential moving average of the weights.
     """
 
     name: Models
     architecture: VAEArchitectureConfig
     z_dims: tuple[StrictlyPositiveInt, ...]
+    z_cond_dim: StrictlyPositiveInt
     temperature: StrictlyPositiveFloat
-    eval_std_divisor: PositiveFloat
+    sampling_std: tuple[PositiveFloat, ...]
     ema_decay: Annotated[float, Field(gt=0, lt=1)]
+
+    @model_validator(mode='after')
+    def _check_latent_settings(self) -> Self:
+        if self.z_cond_dim >= self.z_dims[-1]:
+            msg = 'z_cond_dim ({}) must be smaller than the channels of the top latent ({}).'
+            raise ValueError(msg.format(self.z_cond_dim, self.z_dims[-1]))
+
+        if len(self.sampling_std) != len(self.z_dims):
+            msg = 'sampling_std (length {}) must match z_dims (length {}).'
+            raise ValueError(msg.format(len(self.sampling_std), len(self.z_dims)))
+
+        return self
 
 
 @dataclass(frozen=True)
@@ -287,9 +304,16 @@ class AutoencoderTrainingConfig(TrainingConfig):
         n_epochs: Maximum number of training epochs.
         early_stopping: Early stopping configuration.
         mixed_precision: Autocast precision, ``float16`` (with gradient scaling) or ``bfloat16``; empty for none.
+        annealing_period: Epochs of the cyclical annealing of the KL divergence; ``0`` disables it.
+        annealing_cycles: Cycles in the annealing period, in each of which the weight of the KL
+            divergence rises from 0.01 to 1.
+        adv_warmup_epochs: Epochs over which the weight of the adversarial loss rises from 0 to 1.
     """
 
     mixed_precision: MixedPrecision
+    annealing_period: PositiveInt
+    annealing_cycles: StrictlyPositiveInt
+    adv_warmup_epochs: PositiveInt
 
 
 @dataclass(frozen=True)
@@ -382,11 +406,14 @@ class EvaluationConfig:
             the FID measures, against as many other images of the same partition.
         fid_relaxation: Weight of the posterior of the lower latents in the counterfactuals the FID
             measures; ``0`` decodes them from the prior only.
+        strength: Weight of the target class in the condition of the counterfactuals, against the
+            probabilities of the classifier; ``1`` conditions on the target class only.
     """
 
     relaxations: Annotated[tuple[Annotated[float, Field(ge=0, le=1)], ...], Field(min_length=1)]
     fid_samples: StrictlyPositiveInt
     fid_relaxation: Annotated[float, Field(ge=0, le=1)]
+    strength: Annotated[float, Field(ge=0, le=1)]
 
 
 @dataclass(frozen=True)

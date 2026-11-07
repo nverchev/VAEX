@@ -15,6 +15,7 @@ from src.data.structures import Encoding, Inputs, Outputs
 from src.module.layers import (
     ConvBlock,
     FromLatentConv,
+    InformationEraser,
     NormFactory,
     ResBlock,
     ToLatentBlock,
@@ -99,7 +100,7 @@ class BaseAutoencoder(nn.Module, abc.ABC):
         norm_cls: Normalization class of the layers.
         bn_momentum: Momentum for batch normalization.
         bn_eps: Epsilon for batch normalization.
-        eval_std_divisor: Standard deviation divisor in evaluation mode.
+        sampling_std: Factor of the standard deviation of each latent in evaluation mode, from the top.
     """
 
     x_dim: Final[int]
@@ -114,7 +115,7 @@ class BaseAutoencoder(nn.Module, abc.ABC):
     norm_cls: Final[NormClass]
     bn_momentum: Final[float]
     bn_eps: Final[float]
-    eval_std_divisor: Final[float]
+    sampling_std: Final[tuple[float, ...]]
 
     def __init__(self) -> None:
         """Initialize."""
@@ -134,7 +135,7 @@ class BaseAutoencoder(nn.Module, abc.ABC):
         self.norm_cls = arch.norm_cls
         self.bn_momentum = arch.bn_momentum
         self.bn_eps = arch.bn_eps
-        self.eval_std_divisor = cfg_model.eval_std_divisor
+        self.sampling_std = cfg_model.sampling_std
         return
 
     @abc.abstractmethod
@@ -153,11 +154,15 @@ class BaseVAEX(BaseAutoencoder, abc.ABC):
         n_classes: Number of target classes.
         inference_block: Variant of the inference block.
         temperature: Divisor of the log-probabilities of the classifier before the softmax.
+        z_cond_dim: Channels of the top latent whose prior the condition sets.
+        strength: Weight of the target class in the condition of the counterfactuals.
     """
 
     n_classes: Final[int]
     inference_block: Final[InferenceBlock]
     temperature: Final[float]
+    z_cond_dim: Final[int]
+    strength: Final[float]
 
     def __init__(self) -> None:
         """Initialize."""
@@ -168,10 +173,12 @@ class BaseVAEX(BaseAutoencoder, abc.ABC):
         self.n_classes = len(cfg.data.dataset.classes)
         self.inference_block = arch.inference_block
         self.temperature = cfg_model.temperature
+        self.z_cond_dim = cfg_model.z_cond_dim
+        self.strength = cfg.evaluation.strength
         return
 
     @abc.abstractmethod
-    def generate_counterfactual(self, image: torch.Tensor, target: int, relaxation: float) -> Outputs:
+    def generate_counterfactual(self, inputs: Inputs, target: int, relaxation: float) -> Outputs:
         """Generate counterfactual reconstructions."""
 
     @abc.abstractmethod
@@ -195,14 +202,20 @@ class VAEX(BaseVAEX):
     """Hierarchical VAE conditioned on the probability that a classifier assigns to a sample.
 
     The condition enters as an extra channel of the image and as an extra channel of the top
-    latent, whose first channels have a prior mean learned from the condition. Counterfactuals set
-    condition and channels to a target, and relax the posterior of the lower latents.
+    latent. The first ``z_cond_dim`` channels of the top latent, the conditioned ones, have a prior
+    learned from the condition; the other channels, the free ones, have a learned prior that
+    ignores it, and an adversary removes the class from their posterior. Every posterior is a
+    shift from its prior. Counterfactuals sample the conditioned channels from the prior of the
+    target, keep the posterior of the free ones, and relax the posterior of the lower latents.
 
     Attributes:
         top_channel_dim: Size of a channel of the top latent, flattened.
         condition_to_image: Map from the condition to an extra image channel.
         condition_to_latent: Map from the condition to an extra channel of the top latent.
-        condition_to_prior: Map from the condition to the prior mean of the conditioned channels.
+        condition_to_prior: Map from the condition to the prior mean and log-variance of the
+            conditioned channels.
+        free_prior: Prior mean and log-variance of the free channels.
+        information_eraser: Adversary predicting the class from the posterior of the free channels.
         initial_convolution: Map from the image and its condition to the first features.
         encoding: Residual blocks of the encoder.
         final_inference: Posterior of the top latent.
@@ -216,6 +229,8 @@ class VAEX(BaseVAEX):
     condition_to_image: Final[nn.Sequential]
     condition_to_latent: Final[nn.Sequential]
     condition_to_prior: Final[nn.Linear]
+    free_prior: Final[nn.Parameter]
+    information_eraser: Final[InformationEraser]
     initial_convolution: Final[nn.Conv2d]
     encoding: Final[nn.ModuleList]
     final_inference: Final[ToLatentBlock]
@@ -239,7 +254,13 @@ class VAEX(BaseVAEX):
             nn.Unflatten(1, (1, self.x_dim, self.x_dim)),
         )
         self.condition_to_latent = nn.Sequential(nn.Linear(self.n_classes, self.top_channel_dim), nn.ELU())
-        self.condition_to_prior = nn.Linear(self.n_classes, self.conditioned_dim)
+        self.condition_to_prior = nn.Linear(self.n_classes, 2 * self.conditioned_dim)
+        self.free_prior = nn.Parameter(torch.zeros(1, 2 * self.free_dim))
+        self.information_eraser = InformationEraser(
+            2 * self.free_dim,
+            self.n_classes,
+            reversal_strength=Experiment.get_config().autoencoder.objective.reversal_strength,
+        )
         self.initial_convolution = nn.Conv2d(self.n_channels + 1, self.h_dims[0], 1, bias=False)
         self.encoding = self._get_encoding(norm)
         self.final_inference = to_latent_cls(self.h_dims[-1], top_z_dim, top_res, act_cls=self.act_cls, norm=norm)
@@ -259,8 +280,13 @@ class VAEX(BaseVAEX):
 
     @property
     def conditioned_dim(self) -> int:
-        """The size of the conditioned channels of the top latent, one for each class but the last."""
-        return (self.n_classes - 1) * self.top_channel_dim
+        """The size of the conditioned channels of the top latent, flattened."""
+        return self.z_cond_dim * self.top_channel_dim
+
+    @property
+    def free_dim(self) -> int:
+        """The size of the free channels of the top latent, flattened."""
+        return (self.z_dims[-1] - self.z_cond_dim) * self.top_channel_dim
 
     @override
     def forward(self, inputs: Inputs, /) -> Outputs:
@@ -269,7 +295,7 @@ class VAEX(BaseVAEX):
 
     @override
     def extra_repr(self) -> str:
-        return f'temperature={self.temperature}, eval_std_divisor={self.eval_std_divisor}'
+        return f'temperature={self.temperature}, sampling_std={self.sampling_std}, strength={self.strength}'
 
     @override
     def condition_from(self, inputs: Inputs) -> torch.Tensor:
@@ -290,73 +316,95 @@ class VAEX(BaseVAEX):
         return torch.softmax(inputs.log_probs / self.temperature, dim=1)
 
     @override
-    def generate_counterfactual(self, image: torch.Tensor, target: int, relaxation: float) -> Outputs:
+    def generate_counterfactual(self, inputs: Inputs, target: int, relaxation: float) -> Outputs:
         """Generate counterfactuals of the images for a target class.
 
-        The target conditions both the encoder and the decoder, and sets the conditioned channel
-        of the top latent; ``relaxation`` scales the posterior shifts of the lower latents.
+        The condition mixes the probabilities of the classifier with the target class, weighted by
+        ``strength``. It conditions both the encoder and the decoder; the conditioned channels of the
+        top latent are sampled from their prior, and ``relaxation`` scales the posterior shifts of
+        the lower latents.
 
         Args:
-            image: the images.
+            inputs: the images and the log-probabilities of the classifier.
             target: the class the counterfactuals aim at.
             relaxation: weight of the posterior, from 1 (reconstruction) to 0 (prior only).
 
         Returns:
             The counterfactuals in ``recon``.
         """
-        condition = self.get_target_condition(target, len(image))
-        encoding = self.encode(image, condition)
-        z = encoding.z.clone()
-        z[:, : self.conditioned_dim] = self.condition_to_prior(condition)
-        outputs = self.decode(z, condition, encoding.hidden, relaxation=relaxation)
-        return outputs
+        target_condition = self.get_target_condition(target, len(inputs.image))
+        condition = (1 - self.strength) * self.condition_from(inputs) + self.strength * target_condition
+        encoding = self.encode(inputs.image, condition)
+        return self.decode(condition, encoding, relaxation=relaxation, cut_conditioned=True)
 
     def decode(
         self,
-        z: torch.Tensor,
         condition: torch.Tensor,
-        hidden: tuple[torch.Tensor, ...] | None,
+        encoding: Encoding | None,
+        *,
         relaxation: float = 1.0,
+        cut_conditioned: bool = False,
     ) -> Outputs:
-        """Decode the top latent under a condition.
+        """Decode under a condition.
 
         Args:
-            z: sample of the top latent, flattened.
             condition: the condition.
-            hidden: features of the encoder, from the coarsest; ``None`` samples the latents from
-                their priors.
-            relaxation: weight of the posterior shift of the first stage, of its mean and of its
-                log-variance, squared at each stage; ``0`` samples the lower latents from their priors.
+            encoding: the posterior shift of the top latent and the features of the encoder;
+                ``None`` samples every latent from its prior.
+            relaxation: weight of the posterior shift of the lower latents, of its mean and of its
+                log-variance, as :meth:`get_posterior_weights` spreads it over the stages; ``0``
+                samples the lower latents from their priors.
+            cut_conditioned: whether to sample the conditioned channels of the top latent from their
+                prior, ignoring their posterior shift.
 
         Returns:
-            The reconstruction, the prior mean of the top latent and, with the encoder features,
-            the posterior shifts and the prior log-variances of the stages.
+            The reconstruction and, with an encoding, the posterior shifts, the prior
+            log-variances and the logits of the adversary.
         """
         mus: list[torch.Tensor] = []
         log_vars: list[torch.Tensor] = []
         prior_log_vars: list[torch.Tensor] = []
-        prior_mu = self._get_prior_mu(condition, z)
+        adv_logits = torch.empty(0)
+        p_mu, p_log_var = self.get_top_prior(condition)
+        if encoding is None:
+            z = self.sample(p_mu, p_log_var, level=0)
+        else:
+            d_mu, d_log_var = encoding.mu, encoding.log_var
+            weight = torch.ones_like(d_mu[:1])
+            if cut_conditioned:
+                weight[:, : self.conditioned_dim] = 0
+
+            z = self.sample(weight * d_mu + p_mu, weight * d_log_var + p_log_var, level=0)
+            free = slice(self.conditioned_dim, None)
+            free_posterior = torch.cat([p_mu[:, free] + d_mu[:, free], p_log_var[:, free] + d_log_var[:, free]], dim=1)
+            adv_logits = self.information_eraser(free_posterior)
+            mus.append(d_mu)
+            log_vars.append(d_log_var)
+            prior_log_vars.append(p_log_var)
+
         z = torch.cat([z, self.condition_to_latent(condition)], dim=1)
         x = self.from_latent(z, self.init_decoder.expand(z.size(0), -1, -1, -1))
-        for i, stage in enumerate(cast(list[LatentStage], list(self.decoding))):
+        weights = self.get_posterior_weights(relaxation)
+        for level, stage in enumerate(cast(list[LatentStage], list(self.decoding)), start=1):
             x = stage.decode(x)
             p_mu, p_log_var = stage.generate(x, z)
             p_log_var = soft_clamp(p_log_var, PRIOR_LOGVAR_MIN, PRIOR_LOGVAR_MAX)
-            if hidden is None:
-                z = self.sample(p_mu, p_log_var)
+            if encoding is None:
+                z = self.sample(p_mu, p_log_var, level=level)
             else:
-                d_mu, d_log_var = stage.inference(stage.merge(torch.cat([x, hidden[i]], dim=1)))
+                hidden = encoding.hidden[level - 1]
+                d_mu, d_log_var = stage.inference(stage.merge(torch.cat([x, hidden], dim=1)))
                 d_log_var = soft_clamp(d_log_var, -POSTERIOR_LOGVAR_BOUND, POSTERIOR_LOGVAR_BOUND)
-                z = self.sample(relaxation * d_mu + p_mu, relaxation * d_log_var + p_log_var)
+                weight = weights[level - 1]
+                z = self.sample(weight * d_mu + p_mu, weight * d_log_var + p_log_var, level=level)
                 mus.append(d_mu)
                 log_vars.append(d_log_var)
                 prior_log_vars.append(p_log_var)
 
             x = stage.from_latent(z, x)
-            relaxation *= relaxation
 
         recon = self.final_convolution(x)
-        return Outputs(recon, prior_mu, mu=mus, log_var=log_vars, prior_log_var=prior_log_vars)
+        return Outputs(recon, mu=mus, log_var=log_vars, prior_log_var=prior_log_vars, adv_logits=adv_logits)
 
     def encode(self, image: torch.Tensor, condition: torch.Tensor) -> Encoding:
         """Encode the images under a condition.
@@ -366,7 +414,7 @@ class VAEX(BaseVAEX):
             condition: the condition.
 
         Returns:
-            The top latent with its posterior, and the features at each resolution.
+            The posterior shift of the top latent, and the features at each resolution.
         """
         x = self.initial_convolution(torch.cat([image, self.condition_to_image(condition)], dim=1))
         hidden: list[torch.Tensor] = []
@@ -374,9 +422,9 @@ class VAEX(BaseVAEX):
             hidden.append(x)
             x = encode(x)
 
-        mu, log_var = self.final_inference(x)
-        log_var = soft_clamp(log_var, -POSTERIOR_LOGVAR_BOUND, POSTERIOR_LOGVAR_BOUND)
-        return Encoding(z=self.sample(mu, log_var), mu=mu, log_var=log_var, hidden=tuple(reversed(hidden)))
+        d_mu, d_log_var = self.final_inference(x)
+        d_log_var = soft_clamp(d_log_var, -POSTERIOR_LOGVAR_BOUND, POSTERIOR_LOGVAR_BOUND)
+        return Encoding(mu=d_mu, log_var=d_log_var, hidden=tuple(reversed(hidden)))
 
     @override
     def generate(self, condition: torch.Tensor, /) -> torch.Tensor:
@@ -388,11 +436,37 @@ class VAEX(BaseVAEX):
         Returns:
             The generated images.
         """
-        top_dim = self.z_dims[-1] * self.top_channel_dim
-        standard = torch.zeros(len(condition), top_dim, device=self.device)
-        z = self.sample(standard, standard)  # the prior of the top latent is standard
-        z[:, : self.conditioned_dim] = self.condition_to_prior(condition)
-        return self.decode(z, condition, None).recon
+        return self.decode(condition, None).recon
+
+    def get_posterior_weights(self, relaxation: float) -> tuple[float, ...]:
+        """Get the weight of the posterior shift of each lower latent, from the top down.
+
+        The weights grow towards the pixels: the latent ``level`` stages below the top has
+        ``relaxation ** (len(z_dims) - level)``, so that the finest latent keeps the most of its
+        posterior and the texture follows the image, while the coarse latents follow the condition.
+
+        Args:
+            relaxation: weight of the posterior of the finest latent; ``1`` keeps every posterior.
+
+        Returns:
+            One weight for each lower latent, from the top down.
+        """
+        n_latents = len(self.z_dims)
+        return tuple(relaxation ** (n_latents - level) for level in range(1, n_latents))
+
+    def get_top_prior(self, condition: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Get the prior of the top latent: learned from the condition for the conditioned channels.
+
+        Args:
+            condition: the condition.
+
+        Returns:
+            The prior mean and log-variance, flattened, with the conditioned channels first.
+        """
+        cond_mu, cond_log_var = self.condition_to_prior(condition).chunk(2, dim=1)
+        free_mu, free_log_var = self.free_prior.expand(len(condition), -1).chunk(2, dim=1)
+        log_var = soft_clamp(torch.cat([cond_log_var, free_log_var], dim=1), PRIOR_LOGVAR_MIN, PRIOR_LOGVAR_MAX)
+        return torch.cat([cond_mu, free_mu], dim=1), log_var
 
     @override
     def get_random_condition(self, batch_size: int) -> torch.Tensor:
@@ -438,32 +512,26 @@ class VAEX(BaseVAEX):
             The reconstructions, with the posteriors and the priors.
         """
         condition = self.condition_from(inputs)
-        encoding = self.encode(inputs.image, condition)
-        outputs = self.decode(encoding.z, condition, encoding.hidden, relaxation=relaxation)
-        outputs.mu.insert(0, encoding.mu)
-        outputs.log_var.insert(0, encoding.log_var)
+        outputs = self.decode(condition, self.encode(inputs.image, condition), relaxation=relaxation)
+        outputs.log_probs = inputs.log_probs
         return outputs
 
-    def sample(self, mu: torch.Tensor, log_var: torch.Tensor) -> torch.Tensor:
-        """Sample a Gaussian, with a smaller standard deviation in evaluation mode.
+    def sample(self, mu: torch.Tensor, log_var: torch.Tensor, *, level: int) -> torch.Tensor:
+        """Sample a Gaussian, with the standard deviation scaled by ``sampling_std`` in evaluation mode.
 
         Args:
             mu: the mean.
             log_var: the log-variance.
+            level: the latent, from 0 for the top one.
 
         Returns:
             The sample.
         """
         std = torch.exp(0.5 * log_var)
         if not self.training:
-            std = std / self.eval_std_divisor
+            std = std * self.sampling_std[level]
 
         return mu + torch.randn_like(std) * std
-
-    def _get_prior_mu(self, condition: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
-        prior_mu = torch.zeros_like(z)
-        prior_mu[:, : self.conditioned_dim] = self.condition_to_prior(condition)
-        return prior_mu
 
     def _get_encoding(self, norm: NormFactory) -> nn.ModuleList:
         encoding = nn.ModuleList()

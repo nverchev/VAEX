@@ -72,6 +72,13 @@ class VAEModel(Model[Inputs, Outputs]):
 
     module: BaseVAEX
 
+    @override
+    def __call__(self, inputs: Inputs, /) -> Outputs:
+        """Run the forward pass, recording the epoch of the model for the annealing and the warm-up."""
+        outputs = super().__call__(inputs)
+        outputs.epoch = self.epoch
+        return outputs
+
     @property
     def inference_module(self) -> BaseVAEX:
         """The VAE that reconstructs and generates: the trained one."""
@@ -92,11 +99,11 @@ class VAEModel(Model[Inputs, Outputs]):
             return module.generate(condition).float()
 
     @torch.inference_mode()
-    def generate_counterfactual(self, image: torch.Tensor, target: int, relaxation: float) -> Outputs:
+    def generate_counterfactual(self, inputs: Inputs, target: int, relaxation: float) -> Outputs:
         """Generate counterfactuals of the images for a target class, in the precision of the model.
 
         Args:
-            image: the images to turn towards the target.
+            inputs: the images to turn towards the target and the log-probabilities of the classifier.
             target: the target class.
             relaxation: weight of the posterior of the lower latents.
 
@@ -105,7 +112,7 @@ class VAEModel(Model[Inputs, Outputs]):
         """
         module = self.inference_module.eval()
         with self._autocast():
-            outputs = module.generate_counterfactual(image, target, relaxation)
+            outputs = module.generate_counterfactual(inputs, target, relaxation)
 
         outputs.recon = outputs.recon.float()
         return outputs

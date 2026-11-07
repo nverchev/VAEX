@@ -1,8 +1,8 @@
 """Tune the VAE with Optuna.
 
 Each trial trains for ``n_epochs`` and scores the validation loss. The trials read the classifier
-of the current experiment, so train it first with the same overrides. Trials must share ``sigma``
-and ``c_kld``, which set the scale of the loss.
+of the current experiment, so train it first with the same overrides. Trials must share ``sigma_2``,
+which sets the scale of the loss.
 
 Usage::
 
