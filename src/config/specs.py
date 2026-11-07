@@ -479,6 +479,11 @@ class PathSpecs:
         """Version-scoped experiment directory: ``<root_exp_dir>/v<VERSION>``."""
         return self.root_exp_dir / f'v{VERSION}'
 
+    @property
+    def custom_images_dir(self) -> pathlib.Path:
+        """Faces outside the dataset, aligned as the CelebA images: ``<data_dir>/custom_images``."""
+        return self.data_dir / 'custom_images'
+
 
 @dataclass(frozen=True)
 class UserSettings:

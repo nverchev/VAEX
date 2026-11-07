@@ -156,6 +156,8 @@ url = "https://download.pytorch.org/whl/cu130"
   uv run generate_counterfactuals.py
   uv run generate_misclassified_counterfactuals.py
   ```
+  The first also draws every image in `<data_dir>/custom_images`, faces outside the dataset
+  aligned as the CelebA images (178 x 218), in `custom/<image name>/counterfactuals.png`.
 
 - **Reconstruct dataset samples:**
   ```bash

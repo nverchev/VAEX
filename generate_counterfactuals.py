@@ -1,5 +1,8 @@
 """Generate counterfactuals of selected samples for each class and posterior relaxation, and render them.
 
+It also renders the counterfactuals of every image in ``<data_dir>/custom_images``, faces outside
+the dataset aligned as the CelebA images.
+
 Usage::
 
     uv run generate_counterfactuals.py
@@ -7,6 +10,7 @@ Usage::
 """
 
 import logging
+from typing import Final
 
 import torch
 
@@ -15,10 +19,14 @@ from drytorch.lib import loading
 from src.config import Experiment, ExperimentConfig, hydra_main
 from src.trackers import get_trackers
 from src.data.dataset import get_split
+from src.data.preprocess import get_preprocessor
 from src.data.split import Partitions
-from src.lib.models import load_autoencoder_model, get_classifier_model, load_trained_state
+from src.data.structures import Inputs
+from src.lib.models import ClassifierModel, VAEModel, load_autoencoder_model, get_classifier_model, load_trained_state
 from src.utils.counterfactuals import get_counterfactual_sweep
 from src.utils.visualization import publish_counterfactual_sweep
+
+IMAGE_SUFFIXES: Final = ('.jpg', '.jpeg', '.png')
 
 
 @torch.inference_mode()
@@ -44,6 +52,30 @@ def generate_counterfactuals() -> None:
     for index, image, label in zip(sample_indices, samples.image, targets.label.tolist(), strict=True):
         sweep = get_counterfactual_sweep(classifier, vae, image, label=label, relaxations=relaxations)
         publish_counterfactual_sweep(sweep, folder=f'{partition.name}/sample_{index}')
+
+    generate_custom_counterfactuals(classifier, vae)
+    return
+
+
+def generate_custom_counterfactuals(classifier: ClassifierModel, vae: VAEModel) -> None:
+    """Generate and publish the counterfactuals of every image in the folder of custom images.
+
+    The class of each image is the one the classifier predicts.
+
+    Args:
+        classifier: the trained classifier.
+        vae: the trained VAE.
+    """
+    cfg = Experiment.get_config()
+    folder = cfg.user.path.custom_images_dir
+    paths = sorted(path for path in folder.glob('*') if path.suffix.lower() in IMAGE_SUFFIXES)
+    logging.info('Generating counterfactuals for %d custom images in %s...', len(paths), folder)
+    preprocessor = get_preprocessor()
+    for path in paths:
+        image = preprocessor.load_image(path).to(classifier.device)
+        label = int(classifier.log_probabilities(Inputs(image=image.unsqueeze(0))).argmax(dim=1).item())
+        sweep = get_counterfactual_sweep(classifier, vae, image, label=label, relaxations=cfg.evaluation.relaxations)
+        publish_counterfactual_sweep(sweep, folder=f'custom/{path.stem}')
 
     return
 

@@ -39,6 +39,20 @@ class Preprocessor:
         # the last transform turns the image into a tensor
         return cast(torch.Tensor, transform(image))
 
+    def load_image(self, path: pathlib.Path) -> torch.Tensor:
+        """Load an image file as the dataset holds its images: cropped, resized and in 8 bits.
+
+        Args:
+            path: the image, a face aligned as the CelebA images.
+
+        Returns:
+            The image, of shape ``(C, H, W)``, with values in [0, 1].
+        """
+        with Image.open(path) as image:
+            transformed = self.transform_image(image.convert('RGB'))
+
+        return torch.from_numpy(self._tensor_to_uint8_numpy(transformed)).float().div(255)
+
     def _tensor_to_uint8_numpy(self, image: torch.Tensor) -> np.ndarray:
         """Convert a float tensor in [0, 1] to a uint8 numpy array."""
         return image.mul(255).clamp(0, 255).to(torch.uint8).numpy()
