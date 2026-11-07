@@ -101,13 +101,13 @@ class ObjectiveConfig:
 
     Attributes:
         c_kld: Weight of the KL divergence against the negative log-likelihood.
-        freebits: Free bits of each latent coordinate, below which the smoothed KL divergence
-            stops decreasing.
+        freebits: Free bits of each coordinate of each stage, from the top latent down, below
+            which the smoothed KL divergence stops decreasing.
         sigma: Standard deviation of each pixel in the negative log-likelihood.
     """
 
     c_kld: PositiveFloat
-    freebits: PositiveFloat
+    freebits: tuple[PositiveFloat, ...]
     sigma: PositiveFloat
 
 
@@ -330,6 +330,14 @@ class AutoencodingConfig(PhaseConfig):
     train: AutoencoderTrainingConfig
     model: ModelConfig
     objective: ObjectiveConfig
+
+    @model_validator(mode='after')
+    def _check_freebits_match_z_dims(self) -> Self:
+        if len(self.objective.freebits) != len(self.model.z_dims):
+            msg = 'freebits (length {}) in objective must match z_dims (length {}) in model.'
+            raise ValueError(msg.format(len(self.objective.freebits), len(self.model.z_dims)))
+
+        return self
 
 
 @dataclass(frozen=True)

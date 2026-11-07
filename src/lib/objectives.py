@@ -52,32 +52,41 @@ class GaussianNLL:
 
 
 class FreeBitsKLD:
-    """KL divergence summed over the latents, smoothed by free bits.
+    """KL divergence summed over the latents, smoothed by the free bits of each stage.
 
-    Each coordinate costs ``softplus(kld - 2 * freebits) + 2 * freebits`` in the loss, which
-    stops pushing the divergence below the free bits; ``KLD`` reports the divergence itself.
+    A coordinate of a stage with free bits ``fb`` costs ``softplus(kld - 2 * fb) + offset`` in
+    the loss, where the offset makes a coordinate with no divergence cost exactly ``fb``. The
+    loss stops pushing the divergence below the free bits. ``KLD`` reports the divergence
+    itself, and ``KLD_stage_<i>`` the divergence of each stage, from the top latent down.
 
     Attributes:
-        freebits: minimum cost per coordinate below which divergence is not pushed.
+        freebits: free bits of each coordinate of each stage, from the top latent down.
     """
 
-    freebits: float
+    freebits: tuple[float, ...]
 
-    def __init__(self, freebits: float) -> None:
+    def __init__(self, freebits: tuple[float, ...]) -> None:
         """Initialize.
 
         Args:
-            freebits: minimum cost per coordinate below which divergence is not pushed.
+            freebits: free bits of each coordinate of each stage, from the top latent down.
         """
         self.freebits = freebits
         return
 
     def __call__(self, outputs: Outputs, _: Targets) -> dict[str, torch.Tensor]:
-        """Calculate the smoothed and raw KL divergence over all latents."""
+        """Calculate the smoothed and raw KL divergence over all latents, and of each stage."""
         divergences = self._calculate_divergences(outputs)
-        kld = sum((self._reduce(d) for d in divergences), torch.zeros(()))
-        kld_fb = sum((self._reduce(self._smooth(d)) for d in divergences), torch.zeros(()))
-        return {'KLD_FB': kld_fb, 'KLD': kld}
+        kld = torch.zeros(())
+        kld_fb = torch.zeros(())
+        stage_klds: dict[str, torch.Tensor] = {}
+        for index, (divergence, freebits) in enumerate(zip(divergences, self.freebits, strict=True)):
+            stage_kld = self._reduce(divergence)
+            kld = kld + stage_kld
+            kld_fb = kld_fb + self._reduce(self._smooth(divergence, freebits))
+            stage_klds[f'KLD_stage_{index}'] = stage_kld
+
+        return {'KLD_FB': kld_fb, 'KLD': kld, **stage_klds}
 
     def _calculate_divergences(self, outputs: Outputs) -> list[torch.Tensor]:
         top_divergence = self._top_divergence(
@@ -90,9 +99,11 @@ class FreeBitsKLD:
 
         return divergences
 
-    def _smooth(self, divergence: torch.Tensor) -> torch.Tensor:
+    @staticmethod
+    def _smooth(divergence: torch.Tensor, freebits: float) -> torch.Tensor:
         # divergences are 2 * KL; _reduce halves them
-        return F.softplus(divergence - 2 * self.freebits) + 2 * self.freebits
+        offset = 2 * freebits - math.log1p(math.exp(-2 * freebits))
+        return F.softplus(divergence - 2 * freebits) + offset
 
     @staticmethod
     def _reduce(divergence: torch.Tensor) -> torch.Tensor:
@@ -139,10 +150,9 @@ def get_nll_loss() -> DictLoss[Outputs, Targets]:
 
 
 def get_kld_loss() -> DictLoss[Outputs, Targets]:
-    """Get the KL divergence summed over the latents, smoothed by free bits.
+    """Get the KL divergence summed over the latents, smoothed by the free bits of each stage.
 
-    Each coordinate costs ``softplus(kld - 2 * freebits) + 2 * freebits`` in the loss, which
-    stops pushing the divergence below the free bits; ``KLD`` reports the divergence itself.
+    See :class:`FreeBitsKLD` for the cost of each coordinate and the reported metrics.
     """
     freebits = Experiment.get_config().autoencoder.objective.freebits
     return DictLoss[Outputs, Targets](FreeBitsKLD(freebits), name='KLD_FB')

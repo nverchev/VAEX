@@ -9,7 +9,7 @@ import torch
 from src.config import Experiment, get_experiment_config
 from src.data.structures import Inputs, Outputs, Targets
 from src.module.autoencoders import VAEX
-from src.lib.objectives import GaussianNLL, get_kld_loss
+from src.lib.objectives import FreeBitsKLD, GaussianNLL
 
 
 @pytest.fixture(scope='module')
@@ -144,8 +144,8 @@ class TestGaussianNLL:
         assert before == after
 
 
-def test_kld_of_posteriors_equal_to_the_priors(experiment: Experiment) -> None:
-    """The divergence is zero and its smooth version is the free bits of every coordinate."""
+def test_kld_of_posteriors_equal_to_the_priors() -> None:
+    """The divergence is zero, and its smooth version is the free bits of every coordinate of each stage."""
     zeros = torch.zeros(3, 4)
     outputs = Outputs(
         recon=torch.empty(0),
@@ -155,9 +155,15 @@ def test_kld_of_posteriors_equal_to_the_priors(experiment: Experiment) -> None:
         prior_log_var=[zeros],
     )
 
-    values = get_kld_loss().calculate(outputs, Targets(label=torch.zeros(3)))
+    values = FreeBitsKLD((0.5, 0.25))(outputs, Targets(label=torch.zeros(3)))
 
-    freebits = Experiment.get_config().autoencoder.objective.freebits
-    expected_smooth = 0.5 * 8 * (math.log1p(math.exp(-2 * freebits)) + 2 * freebits)
     torch.testing.assert_close(values['KLD'], torch.tensor(0.0))
-    torch.testing.assert_close(values['KLD_FB'], torch.tensor(expected_smooth))
+    torch.testing.assert_close(values['KLD_stage_0'], torch.tensor(0.0))
+    torch.testing.assert_close(values['KLD_stage_1'], torch.tensor(0.0))
+    torch.testing.assert_close(values['KLD_FB'], torch.tensor(4 * 0.5 + 4 * 0.25))
+
+
+def test_freebits_must_match_the_stages() -> None:
+    """A configuration with free bits for fewer stages than the latents raises ValueError."""
+    with pytest.raises(ValueError, match='freebits'):
+        get_experiment_config(overrides=['autoencoder.objective.freebits=[1.0,0.5]'])
