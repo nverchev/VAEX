@@ -24,6 +24,7 @@ from src.data.derived_datasets import CounterfactualDataset, EvaluatedDataset, R
 from src.data.split import DataSplit, Partitions, Subset
 from src.data.structures import Inputs, Targets
 from src.utils.fid import FrechetInceptionDistance
+from src.lib.loaders import get_calibration_loader
 from src.lib.objectives import get_classifier_loss, get_counterfactual_success, get_vae_loss
 from src.lib.models import ClassifierModel, VAEModel, load_autoencoder_model, get_classifier_model, load_trained_state
 
@@ -127,7 +128,8 @@ def evaluate_counterfactuals() -> None:
     cfg = Experiment.get_config()
     classifier_model = get_classifier_model()
     load_trained_state(classifier_model)
-    vae_model = load_autoencoder_model(classifier_model)
+    vae_model = load_autoencoder_model()
+    vae_model.set_calibration(get_calibration_loader(classifier_model))
     batch_size = cfg.autoencoder.train.batch_size
     split = get_split(Partitions.test if cfg.final else Partitions.val)
     loader = DataLoader(dataset=split, batch_size=batch_size, pin_memory=False)

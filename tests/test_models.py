@@ -107,7 +107,7 @@ def test_calibration_re_estimates_and_keeps_the_statistics_of_each_path(experime
     """Each path gets statistics of its own, and taking a path again restores them."""
     model = VAEModel(VAEX(), name='vaex', device=CPU)
     inputs = Inputs(image=torch.rand(4, 3, 129, 129), log_probs=torch.full((4, 2), 0.5).log())
-    model.set_calibration(inputs)
+    model.set_calibration([(inputs, Targets(label=torch.zeros(4)))])
     trained = _get_running_means(model)
 
     model.reconstruct(inputs)

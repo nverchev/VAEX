@@ -7,21 +7,20 @@ import torch
 from src.config import Experiment, ExperimentConfig, hydra_main
 from src.trackers import get_trackers
 from src.lib.events import ImageEvent
-from src.lib.models import get_classifier_model, load_autoencoder_model, load_trained_state
+from src.lib.loaders import get_calibration_loader
+from src.lib.models import load_autoencoder_model
 
 
 @torch.inference_mode()
 def generate_samples() -> None:
     """Generate random samples from the priors and publish each.
 
-    Each sample has random probabilities of the classes as its condition. The classifier only
-    conditions the training images that re-estimate the batch normalization statistics.
+    Each sample has random probabilities of the classes as its condition.
     """
     cfg = Experiment.get_config()
     batch_size = cfg.user.generate.batch_size
-    classifier = get_classifier_model()
-    load_trained_state(classifier)
-    vae = load_autoencoder_model(classifier)
+    vae = load_autoencoder_model()
+    vae.set_calibration(get_calibration_loader(None))
     logging.info('Generating %d random samples using %s...', batch_size, vae.name)
     condition = vae.module.get_random_condition(batch_size)
     generated_images = vae.generate(condition)

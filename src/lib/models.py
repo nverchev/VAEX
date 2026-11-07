@@ -1,19 +1,16 @@
 """Models of the experiment."""
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from typing import Any, Final, override
 
 import torch
 import torch.nn as nn
 
 from drytorch.core.exceptions import ModelNotFoundError
-from drytorch.lib.loading import take_from_dataset
 from drytorch.lib.models import EMAModel, Model
 
 from src.config.experiment import Experiment
-from src.data.dataset import get_split
-from src.data.split import Partitions
-from src.data.structures import Inputs, Outputs
+from src.data.structures import Inputs, Outputs, Targets
 from src.module.autoencoders import BaseVAEX, get_autoencoder
 from src.module.classifiers import BaseClassifier, get_classifier
 
@@ -22,7 +19,6 @@ __all__ = [
     'VAEEMAModel',
     'VAEModel',
     'get_autoencoder_model',
-    'get_calibration_inputs',
     'get_classifier_model',
     'load_autoencoder_model',
     'load_trained_state',
@@ -86,22 +82,23 @@ class VAEModel(Model[Inputs, Outputs]):
 
     Attributes:
         module: the VAE.
-        calibration: training images and log-probabilities of the classifier on which the batch
+        calibration: batches of training images, labelled by the classifier, on which the batch
             normalization statistics are re-estimated; ``None`` keeps those of training.
     """
 
     module: BaseVAEX
-    calibration: Inputs | None = None
+    calibration: Iterable[tuple[Inputs, Targets]] | None = None
     _batch_norm_path: BatchNormPath | None = None
     _batch_norm_cache: dict[BatchNormPath, list[torch.Tensor]] | None = None
 
-    def set_calibration(self, inputs: Inputs, /) -> None:
-        """Re-estimate the batch normalization statistics on these inputs for each path.
+    def set_calibration(self, loader: Iterable[tuple[Inputs, Targets]], /) -> None:
+        """Re-estimate the batch normalization statistics on these batches for each path.
 
         Args:
-            inputs: training images and log-probabilities of the classifier, on any device.
+            loader: batches of training images with the log-probabilities of the classifier, on
+                any device; see :func:`src.lib.loaders.get_calibration_loader`.
         """
-        self.calibration = inputs
+        self.calibration = loader
         self._batch_norm_path = None
         self._batch_norm_cache = {}
         return
@@ -199,10 +196,10 @@ class VAEModel(Model[Inputs, Outputs]):
             layer.momentum = None  # a cumulative average over the calibration inputs
             layer.train()
 
-        batch_size = Experiment.get_config().autoencoder.train.batch_size
         try:
             with self._autocast():
-                for batch in _get_batches(self.calibration, batch_size, self.device):
+                for inputs, _ in self.calibration:
+                    batch = Inputs(image=inputs.image.to(self.device), log_probs=inputs.log_probs.to(self.device))
                     run(module, batch, path)
         finally:
             for layer, momentum in zip(batch_norms, momenta, strict=True):
@@ -283,14 +280,11 @@ def get_autoencoder_model(*, average: bool, mixed_precision: torch.dtype | None 
     return VAEModel(get_autoencoder(), name=cfg_model.name, device=cfg.user.device, mixed_precision=mixed_precision)
 
 
-def load_autoencoder_model(classifier: ClassifierModel, /) -> VAEModel:
-    """Load the trained VAE with the average of its weights, re-estimating its batch normalization.
-
-    Args:
-        classifier: the trained classifier, whose log-probabilities condition the calibration.
+def load_autoencoder_model() -> VAEModel:
+    """Load the trained VAE with the average of its weights.
 
     Returns:
-        The trained VAE, at the epoch ``user.load`` sets, with calibration inputs.
+        The trained VAE, at the epoch ``user.load`` sets.
 
     Raises:
         RuntimeError: if the experiment holds no trained VAE.
@@ -298,27 +292,7 @@ def load_autoencoder_model(classifier: ClassifierModel, /) -> VAEModel:
     cfg = Experiment.get_config()
     model = get_autoencoder_model(average=True)
     load_trained_state(model, epoch=cfg.user.load or -1)
-    model.set_calibration(get_calibration_inputs(classifier))
     return model
-
-
-def get_calibration_inputs(classifier: ClassifierModel, /) -> Inputs:
-    """Get the first ``evaluation.bn_samples`` training images, with the log-probabilities of the classifier.
-
-    Args:
-        classifier: the trained classifier.
-
-    Returns:
-        The images and their log-probabilities, on the CPU.
-    """
-    cfg = Experiment.get_config()
-    split = get_split(Partitions.train_val if cfg.final else Partitions.train)
-    _, (inputs, _) = take_from_dataset(split, indices=range(cfg.evaluation.bn_samples), device=torch.device('cpu'))
-    log_probs = [
-        classifier.log_probabilities(batch).cpu()
-        for batch in _get_batches(inputs, cfg.autoencoder.train.batch_size, classifier.device)
-    ]
-    return Inputs(image=inputs.image, log_probs=torch.cat(log_probs))
 
 
 def get_classifier_model() -> ClassifierModel:
@@ -350,15 +324,6 @@ def load_trained_state(model: Model[Any, Any], /, *, epoch: int = -1) -> None:
             'train it first with the same configuration and overrides.'
         )
         raise RuntimeError(msg) from error
-
-    return
-
-
-def _get_batches(inputs: Inputs, batch_size: int, device: torch.device) -> Iterator[Inputs]:
-    for start in range(0, len(inputs.image), batch_size):
-        image = inputs.image[start : start + batch_size].to(device)
-        log_probs = inputs.log_probs[start : start + batch_size].to(device)
-        yield Inputs(image=image, log_probs=log_probs)
 
     return
 
