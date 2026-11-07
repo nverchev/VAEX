@@ -7,7 +7,6 @@ import torch
 from src.config import Experiment, ExperimentConfig, hydra_main
 from src.trackers import get_trackers
 from src.lib.events import ImageEvent
-from src.lib.loaders import get_calibration_loader
 from src.lib.models import load_autoencoder_model
 
 
@@ -20,7 +19,6 @@ def generate_samples() -> None:
     cfg = Experiment.get_config()
     batch_size = cfg.user.generate.batch_size
     vae = load_autoencoder_model()
-    vae.set_calibration(get_calibration_loader(None))
     logging.info('Generating %d random samples using %s...', batch_size, vae.name)
     condition = vae.module.get_random_condition(batch_size)
     generated_images = vae.generate(condition)

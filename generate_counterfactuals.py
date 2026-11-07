@@ -16,7 +16,6 @@ from src.config import Experiment, ExperimentConfig, hydra_main
 from src.trackers import get_trackers
 from src.data.dataset import get_split
 from src.data.split import Partitions
-from src.lib.loaders import get_calibration_loader
 from src.lib.models import load_autoencoder_model, get_classifier_model, load_trained_state
 from src.utils.counterfactuals import get_counterfactual_sweep
 from src.utils.visualization import publish_counterfactual_sweep
@@ -29,7 +28,6 @@ def generate_counterfactuals() -> None:
     classifier = get_classifier_model()
     load_trained_state(classifier)
     vae = load_autoencoder_model()
-    vae.set_calibration(get_calibration_loader(classifier))
     partition = Partitions.test if cfg.final else Partitions.val
     split = get_split(partition)
     if cfg.user.plot.sample_indices:

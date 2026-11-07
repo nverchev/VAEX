@@ -10,7 +10,6 @@ from src.config import Experiment, ExperimentConfig, hydra_main
 from src.trackers import get_trackers
 from src.lib.events import ImageEvent
 from src.data import Inputs, Partitions, get_split
-from src.lib.loaders import get_calibration_loader
 from src.lib.models import load_autoencoder_model, get_classifier_model, load_trained_state
 
 
@@ -28,7 +27,6 @@ def reconstruct_samples() -> None:
     classifier = get_classifier_model()
     load_trained_state(classifier)
     vae_model = load_autoencoder_model()
-    vae_model.set_calibration(get_calibration_loader(classifier))
     device = vae_model.device
     if cfg_user.plot.sample_indices:
         sample_indices, (samples, targets) = loading.take_from_dataset(

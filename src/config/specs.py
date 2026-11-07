@@ -408,15 +408,12 @@ class EvaluationConfig:
             measures; ``0`` decodes them from the prior only.
         strength: Weight of the target class in the condition of the counterfactuals, against the
             probabilities of the classifier; ``1`` conditions on the target class only.
-        bn_samples: Training images on which the batch normalization statistics are re-estimated
-            for each path through the VAE, with the noise of evaluation mode.
     """
 
     relaxations: Annotated[tuple[Annotated[float, Field(ge=0, le=1)], ...], Field(min_length=1)]
     fid_samples: StrictlyPositiveInt
     fid_relaxation: Annotated[float, Field(ge=0, le=1)]
     strength: Annotated[float, Field(ge=0, le=1)]
-    bn_samples: StrictlyPositiveInt
 
 
 @dataclass(frozen=True)

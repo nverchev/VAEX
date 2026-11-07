@@ -2,4 +2,3 @@ relaxations: [1.0, 0.9, 0.8, 0.7, 0.6]  # weights of the posterior of the lower 
 fid_samples: 2048
 fid_relaxation: 0.6
 strength: 1.0  # weight of the target class in the condition of the counterfactuals
-bn_samples: 4096  # training images re-estimating the batch normalization for each path
