@@ -220,7 +220,10 @@ Studies are stored in `optimization_db/` and continue when run again. `sigma_2` 
 ### Final pipeline
 
 The final models train on training and validation and are evaluated on the test partition,
-as in the [results](#results):
+as in the [results](#results). The final VAE uses the wider architecture
+(`configs/experiment/autoencoder/model/architecture/wide.yaml`): add
+`autoencoder/model/architecture=wide` to every command, the classifier's included, since the
+VAE finds the classifier through the name of the run.
 
 ```bash
 uv run train_classifier.py         final=true

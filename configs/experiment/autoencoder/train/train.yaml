@@ -3,8 +3,8 @@ defaults:
   - early_stopping: early_stopping
   - _self_
 
-n_epochs: 50
-batch_size: 16
+n_epochs: 100
+batch_size: 32
 mixed_precision: null  # null = full precision
 _n_subprocesses: ${user.n_subprocesses}
 annealing_period: 90

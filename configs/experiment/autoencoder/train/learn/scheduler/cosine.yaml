@@ -1,0 +1,8 @@
+# the learning rate falls along a cosine to a tenth of the initial one at the last epoch
+function: cosine
+restart_interval: 0
+restart_fraction: 0.0
+warmup_steps: 0
+settings:
+  min_decay: 0.1
+  decay_steps: ${autoencoder.train.n_epochs}

@@ -1,10 +1,10 @@
 defaults:
-  - scheduler: step
+  - scheduler: cosine
   - _self_
 
 optimizer: AdamW
-learning_rate: 5.e-4
-grad_op: null
+learning_rate: 3.e-4
+grad_op: norm_clipper
 clip_criterion: null
 opt_settings:
-  weight_decay: 3.0e-5
+  weight_decay: 1.e-5

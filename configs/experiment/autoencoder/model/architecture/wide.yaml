@@ -1,0 +1,10 @@
+norm_cls: BatchNorm2d
+act_cls: SiLU
+bn_momentum: 0.1
+bn_eps: 1e-6
+h_dims: [32, 64, 128, 256, 512, 1024]  # twice the channels of architecture.yaml
+k_dims: [3, 3, 3, 3, 3]
+strides: [2, 2, 2, 2, 2]
+paddings: [1, 1, 1, 1, 1]
+depths: [1, 1, 1, 1, 1]
+inference_block: adain  # adain = VAEX, mobile = VAEXcat
