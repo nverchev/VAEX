@@ -7,6 +7,15 @@ and improves the model and its training (see [the differences](#differences-from
 For a replication closer to the article, use the published version, tag
 [`v1.0`](https://github.com/nverchev/VAEX/tree/v1.0). The [results](#results) compare the model with the article.
 
+> **Known problems of the current version.** This branch is in development:
+>
+> - for relaxations between 0.6 and 0.8, the counterfactuals have a gray, textured background,
+>   while the reconstructions and the full cut have a clean one;
+> - in 0.6 % of the test images, the KL divergence of one stage is very large, and these images
+>   dominate the mean $D_{KL}$ (see the [results](#results)).
+>
+> For results without these problems, use tag `v1.0`.
+
 ---
 
 ## Overview
@@ -28,11 +37,7 @@ The framework is implemented as a deep **Hierarchical VAE (HVAE)** with multi-sc
 - **Posterior Relaxation**: Resolves the tension between identity preservation and counterfactual transformation. High-level semantics are adjusted at the top latent, while the posterior shift of the lower latent `level` stages below the top is weighted by `relaxation ** (6 - level)`: the coarse latents follow the condition and the finest keep the texture of the image, allowing a smooth transition from reconstruction to prior sampling.
 - **Free-Bits KL Divergence**: Reserves a minimum information capacity per latent coordinate to prevent inactive stages and posterior collapse across the hierarchy. Each stage has its own free bits (`autoencoder.objective.freebits`, from the top latent down), and the KL divergence of each stage is logged as `KLD_stage_<i>`. `Active_stage_<i>` logs the fraction of the coordinates of each stage whose KL divergence exceeds 0.01 nats; it falls to zero when a stage collapses.
 - **Prior Conditioning**: The condition is the softmax of the classifier's log-probabilities divided by a temperature (`autoencoder.model.temperature`). A linear layer maps it to the prior mean and log-variance of the conditioned channels of the top latent (`autoencoder.model.z_cond_dim`); the other channels, the free ones, have a learned prior that ignores the condition. Every posterior is a shift from its prior.
-- **Information Eraser**: An adversary predicts the probabilities of the classifier from the posterior of the free channels of the top latent. A gradient reversal (`autoencoder.objective.reversal_strength`) makes the free channels hide the class, so that a counterfactual changes the class through the conditioned channels only. The adversarial loss (`Adv`) rises to full weight over `autoencoder.train.adv_warmup_epochs`.
-- **Cyclical KL Annealing**: The weight of the KL divergence rises along a cosine from 0.01 to 1 in each of `autoencoder.train.annealing_cycles` cycles over the first `autoencoder.train.annealing_period` epochs, then stays at 1.
-- **Gaussian NLL**: Scores the reconstruction with a fixed variance (`autoencoder.objective.sigma_2`), which sets the balance with the KL divergence.
-- **Sampling**: In evaluation mode, the standard deviation of each latent is multiplied by its factor in `autoencoder.model.sampling_std`, from the top latent down. Counterfactuals mix the classifier's probabilities with the target class, weighted by `evaluation.strength`.
-
+- **Information Eraser (improved version)**: An adversary predicts the probabilities of the classifier from the posterior of the free channels of the top latent. A gradient reversal (`autoencoder.objective.reversal_strength`) makes the free channels hide the class, so that a counterfactual changes the class through the conditioned channels only. The adversarial loss (`Adv`) rises to full weight over `autoencoder.train.adv_warmup_epochs`.
 ---
 
 ## Dataset — CelebA
@@ -255,26 +260,41 @@ in the [key contributions](#key-contributions):
 - **Training**: AdamW and an exponential moving average of the weights, with settings from tuning.
 - **Counterfactuals**: the noise of each stage and the strength of the condition can be set.
 
-Technical differences, shared with `v1.0`:
 
-- **Training loop**: DRYTorch runs the loops, checkpoints and logs; the validation runs
-  every epoch, as in the original implementation.
-- **Images**: they are preprocessed once and cached (center crop 148, bicubic resize to 129),
-  instead of on every load.
-- **Weight normalization**: the current PyTorch parametrization replaces the deprecated
-  `torch.nn.utils.weight_norm`; the two compute the same weights.
-- **FID**: as in the article, the reconstructions and the counterfactuals (towards the class the
-  classifier does not predict) of 2048 images are compared with 2048 other images of the same
-  partition (`evaluation.fid_samples`). The counterfactuals use $r = 0.6$
-  (`evaluation.fid_relaxation`); the article used $r = 0$, so set
-  `evaluation.fid_relaxation=0` to compare with it. The distance is the one of
-  `torchmetrics`, which uses the Inception weights of the original FID.
-- **Not ported**: the other conditioning variants of the original implementation (`C`, `X`,
-  `Prior`, `CPrior`) and the anomaly detection.
 
 ## Results
 
-The results of the published version, tag `v1.0`. The results of this version will follow the final run.
+### This version
+
+The final model (`autoencoder/model/architecture=wide final=true`, version 1.6) trains on
+training and validation and is evaluated on the test partition.
+
+| | this version |
+|---|---|
+| classifier accuracy | 97.6 % |
+| classifier accuracy on the reconstructions | 97.2 % |
+| MSE | $1.02 \times 10^{-3}$ |
+| $D_{KL}$ | 13 124 (994 without 123 images, see below) |
+| FID, reconstructions | 54.0 |
+| FID, counterfactuals ($r = 0.6$) | 77.1 |
+
+Successful counterfactuals for each relaxation $r$:
+
+| $r$ | 0.6 | 0.7 | 0.8 | 0.9 | 1 |
+|---|---|---|---|---|---|
+| this version | 94.0 % | 73.2 % | 41.3 % | 17.2 % | 6.7 % |
+
+The relaxation weights the stages differently than in `v1.0` (see
+[key contributions](#key-contributions)), so the same $r$ does not give the same counterfactual
+in the two versions. The NLL is not listed: with a fixed variance it has another scale than in
+`v1.0`.
+
+In 123 test images (0.6 %), the KL divergence of the third stage from the top reaches up to
+$6.6 \times 10^{7}$, while its median is 138. These images dominate the mean $D_{KL}$.
+
+### The published version
+
+The results of tag `v1.0`, compared with the article.
 
 | | `v1.0` | article |
 |---|---|---|
