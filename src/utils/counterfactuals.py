@@ -24,7 +24,7 @@ class CounterfactualSweep:
         relaxations: the weights of the posterior, from one (reconstruction) towards zero.
         original: the sample.
         recon: its reconstruction.
-        cut: its simple cut, the decoding with no posterior shift.
+        cut: its full cut, the decoding with no posterior shift.
         probabilities: the probability of the label for the original, the reconstruction and the cut.
         counterfactuals: one row per class, with one image per relaxation.
         counterfactual_probabilities: the probability of the target class for each counterfactual.

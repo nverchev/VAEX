@@ -124,7 +124,7 @@ class VAEModel(Model[Inputs, Outputs]):
         Args:
             inputs: the images and the log-probabilities of the classifier.
             relaxation: weight of the posterior of the lower latents; ``1`` reconstructs the
-                images, ``0`` gives their simple cut.
+                images, ``0`` gives their full cut.
 
         Returns:
             The outputs, with the reconstructions in full precision.

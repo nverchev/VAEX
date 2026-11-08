@@ -12,7 +12,7 @@ __all__ = [
 def publish_counterfactual_sweep(sweep: CounterfactualSweep, /, *, folder: str) -> None:
     """Publish a sample and its counterfactuals as a grid, with the probabilities of the classifier.
 
-    The first row holds the sample, its reconstruction and its simple cut; each further row turns
+    The first row holds the sample, its reconstruction and its full cut; each further row turns
     the sample towards one class, as the relaxation goes from one towards zero.
 
     Args:
@@ -26,7 +26,7 @@ def publish_counterfactual_sweep(sweep: CounterfactualSweep, /, *, folder: str) 
         [
             f'Original ({class_names[sweep.label]}: {original:.2f})',
             f'Reconstruction ({recon:.2f})',
-            f'Simple cut ({cut:.2f})',
+            f'Full cut ({cut:.2f})',
         ]
     ]
     for target, (row, probabilities) in enumerate(

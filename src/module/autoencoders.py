@@ -506,7 +506,7 @@ class VAEX(BaseVAEX):
         Args:
             inputs: the images and the log-probabilities of the classifier.
             relaxation: weight of the posterior of the lower latents; ``1`` reconstructs the
-                images, ``0`` gives their simple cut, the decoding with no posterior shift.
+                images, ``0`` gives their full cut, the decoding with no posterior shift.
 
         Returns:
             The reconstructions, with the posteriors and the priors.
