@@ -2,7 +2,10 @@
 
 Implementation of [**Hierarchical Variational Autoencoders for Visual Counterfactuals**](https://ieeexplore.ieee.org/document/9506692), ICIP 2021.
 
-This version recreates the original code in a modern style using [DRYTorch](https://github.com/nverchev/drytorch). The [results](#results) compare the new model with the article.
+This version recreates the original code in a modern style using [DRYTorch](https://github.com/nverchev/drytorch)
+and improves the model and its training (see [the differences](#differences-from-the-original-implementation)).
+For a replication closer to the article, use the published version, tag
+[`v1.0`](https://github.com/nverchev/VAEX/tree/v1.0). The [results](#results) compare the model with the article.
 
 ---
 
@@ -239,8 +242,20 @@ uv run generate_counterfactuals.py final=true
 
 ## Differences from the original implementation
 
-The model, the loss and the counterfactuals compute what the original implementation
-computes. Technical differences:
+The published version, tag [`v1.0`](https://github.com/nverchev/VAEX/tree/v1.0), computes what the
+original implementation computes. This version improves the model and the training, as described
+in the [key contributions](#key-contributions):
+
+- **Top latent**: conditioned channels with a prior from the condition, and free channels whose
+  class information an adversary removes.
+- **Condition**: the classifier's probabilities with a temperature, mapped to the prior mean and
+  log-variance.
+- **Loss**: free bits for each stage, a fixed variance for the Gaussian NLL instead of a running
+  estimate, and a cosine annealing of the KL divergence.
+- **Training**: AdamW and an exponential moving average of the weights, with settings from tuning.
+- **Counterfactuals**: the noise of each stage and the strength of the condition can be set.
+
+Technical differences, shared with `v1.0`:
 
 - **Training loop**: DRYTorch runs the loops, checkpoints and logs; the validation runs
   every epoch, as in the original implementation.
@@ -259,7 +274,9 @@ computes. Technical differences:
 
 ## Results
 
-| | this version | article |
+The results of the published version, tag `v1.0`. The results of this version will follow the final run.
+
+| | `v1.0` | article |
 |---|---|---|
 | classifier accuracy | 97.7 % | |
 | NLL | −102 575 | |
@@ -273,13 +290,13 @@ for each relaxation $r$:
 
 | $r$ | 0 | 0.2 | 0.4 | 0.6 | 0.8 | 1 |
 |---|---|---|---|---|---|---|
-| this version | 99.3 % | 98.8 % | 96.9 % | 89.1 % | 60.7 % | 14.4 % |
+| `v1.0` | 99.3 % | 98.8 % | 96.9 % | 89.1 % | 60.7 % | 14.4 % |
 | article | 100 % | 99.8 % | 99.4 % | 96.1 % | 71.4 % | 13.9 % |
 
 The model trained for the article has a sharper trade-off between sample quality and
 counterfactual success: its counterfactuals stay successful up to $r = 0.8$ and then fail
-abruptly, while the success of this version decreases more gradually.
-This version reconstructs slightly less sharply (FID 53.0 against 48.1), but its
+abruptly, while the success of `v1.0` decreases more gradually.
+`v1.0` reconstructs slightly less sharply (FID 53.0 against 48.1), but its
 counterfactuals look more realistic (FID 63.8 against 66.0), and overall it offers a better
 trade-off between image quality and counterfactual success from a visual point of view.
 
